@@ -5,13 +5,13 @@ import torch
 
 SUPPORTED_FILE_EXTENSIONS = (".flac")
 
-# Scelta del modello
+# Model choice
 MODEL_CHOICE = input("Scegli il modello (whisper / whispy_italian): ").strip().lower()
 
-# Caricamento del modello
+# Load Model
 MODEL = transcribe.load_model(MODEL_CHOICE)
 
-# Verifica se CUDA è disponibile
+# Check if CUDA is available
 if torch.cuda.is_available():
     print('CUDA è disponibile, usando fp16')
 else:
@@ -24,12 +24,12 @@ def transcribeFilesInDirectory(directoryPath: str, model):
     for file in directoryListDir:
         if(file.endswith(SUPPORTED_FILE_EXTENSIONS)):
             fileNameWithPath = f'{directoryPath}{os.sep}{file}'
-            filesTranscribed.append(transcribe.transcribeAudioFile(fileNameWithPath, model, MODEL_CHOICE)) # Passa il modello e la scelta
+            filesTranscribed.append(transcribe.transcribeAudioFile(fileNameWithPath, model, MODEL_CHOICE))
         else:
             print(f'Skipping {file} as it\'s not a supported type')
             print(f'supported types are {SUPPORTED_FILE_EXTENSIONS}')
     return filesTranscribed
 
 directoryOfFiles = input('enter the directory to audio files to transcribe: ')
-transcribedSpeakerFiles = transcribeFilesInDirectory(directoryOfFiles, MODEL) # Passa il modello qui
+transcribedSpeakerFiles = transcribeFilesInDirectory(directoryOfFiles, MODEL) 
 combineSpeakers.combineTranscribedSpeakerFiles(directoryOfFiles)
