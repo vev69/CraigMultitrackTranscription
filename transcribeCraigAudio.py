@@ -13,7 +13,7 @@ MODEL = transcribe.load_model(MODEL_CHOICE)
 
 # Check if CUDA is available
 if torch.cuda.is_available():
-    print('CUDA è disponibile, usando fp16')
+    print('CUDA è disponibile')
 else:
     print('CUDA non disponibile, terminazione del processo. Aggiorna le dipendenze per risolvere il problema.')
     sys.exit()
@@ -26,10 +26,10 @@ def transcribeFilesInDirectory(directoryPath: str, model):
             fileNameWithPath = f'{directoryPath}{os.sep}{file}'
             filesTranscribed.append(transcribe.transcribeAudioFile(fileNameWithPath, model, MODEL_CHOICE))
         else:
-            print(f'Skipping {file} as it\'s not a supported type')
-            print(f'supported types are {SUPPORTED_FILE_EXTENSIONS}')
+            print(f'Skippo {file} perche\'s il tipo non e\' supportato')
+            print(f'i tipi supportati sono {SUPPORTED_FILE_EXTENSIONS}')
     return filesTranscribed
 
-directoryOfFiles = input('enter the directory to audio files to transcribe: ')
+directoryOfFiles = input('inserisci la directory dei file audio da trascrivere: ')
 transcribedSpeakerFiles = transcribeFilesInDirectory(directoryOfFiles, MODEL) 
 combineSpeakers.combineTranscribedSpeakerFiles(directoryOfFiles)
