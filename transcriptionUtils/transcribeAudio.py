@@ -56,7 +56,7 @@ def transcribeAudioFile(fileWithPath: str, model, model_choice):
             for segment in transcribedAudio['segments']:
                 file.write(f'[{segment["start"]}, {segment["end"]}] {segment["text"]}\n')
     elif model_choice == "whispy_italian":
-        result = model(fileWithPath) # La pipeline ora dovrebbe restituire i timestamp
+        result = model(fileWithPath)
         with open(inProgressFileName, 'w+', encoding='utf-8') as file:
             for segment in result['chunks']:
                 timestamp = segment['timestamp']
