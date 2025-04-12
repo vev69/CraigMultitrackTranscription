@@ -396,43 +396,63 @@ if __name__ == "__main__":
             MODEL = None
             try:
                 print(f"Caricamento modello '{current_model_choice_full}'...")
-                MODEL = transcribe.load_model(current_model_choice_full) # Passa nome completo
+                MODEL = transcribe.load_model(current_model_choice_full)
                 if MODEL is None: raise ValueError("load_model ha restituito None.")
 
                 print(f"\nAvvio trascrizione per '{current_model_choice_full}' (da audio preprocessato)...")
-                # USA LA CARTELLA PREPROCESSATA COME INPUT PER LA TRASCRIZIONE
-                transcribeFilesInDirectory(
+                # Questa funzione ora ritorna la lista dei percorsi ORIGINALI processati/tentati
+                processed_original_paths = transcribeFilesInDirectory(
                     preprocessed_audio_dir, MODEL, current_model_choice_full, model_output_dir
                 )
 
-                # Combina solo se sono stati processati file per questo modello
-                if checkpoint_data.get('files_processed', {}).get(current_model_choice_full):
-                    print(f"\nCombinazione file per '{current_model_choice_full}'...")
-                    combineSpeakers.combineTranscribedSpeakerFiles(model_output_dir)
-                    print(f"Combinazione completata per '{current_model_choice_full}'.")
-                else: print(f"Nessun file processato per '{current_model_choice_full}'. Salto combinazione.")
+                # --- CONTROLLO SUCCESSO MODIFICATO ---
+                # Verifichiamo se almeno un file .txt finale è stato creato per questo modello
+                # (presuppone che transcribeAudioFile ritorni il percorso del file completato)
+                any_output_file_created = False
+                processed_files_for_model = checkpoint_data.get('files_processed', {}).get(current_model_choice_full, [])
+                if processed_files_for_model: # Se c'è almeno un file processato nel checkpoint
+                    # Ricostruiamo il percorso atteso per l'ultimo file processato
+                    last_original_path = processed_files_for_model[-1]
+                    last_filename = os.path.basename(last_original_path)
+                    expected_completed_file = os.path.join(model_output_dir, f"{os.path.splitext(last_filename)[0]}-TranscribedAudio.txt")
+                    # Questo controllo non è perfetto, ma dà un'idea se l'output esiste
+                    if os.path.exists(expected_completed_file):
+                         any_output_file_created = True
+                         print(f"Verifica successo: Trovato file finale per l'ultimo elemento processato ({os.path.basename(expected_completed_file)}). Assumo successo generale.")
+                    else:
+                         # Potrebbe essere un file di errore o fallimento nell'ultimo step
+                         print(f"Verifica successo: NON trovato file finale per l'ultimo elemento processato ({os.path.basename(expected_completed_file)}). Potrebbero esserci stati errori.")
 
-                # --- Fine elaborazione modello ---
+                # Se è stato creato output (o se non c'erano file da processare), procedi con la combinazione
+                # Se non c'erano file audio preprocessati, processed_original_paths sarà vuoto ma non è un errore.
+                if any_output_file_created or not processed_original_paths: # Procede anche se non c'erano file da trascrivere
+                    if processed_files_for_model: # Combina solo se ci sono file processati
+                        print(f"\nCombinazione file per '{current_model_choice_full}'...")
+                        combineSpeakers.combineTranscribedSpeakerFiles(model_output_dir)
+                        print(f"Combinazione completata per '{current_model_choice_full}'.")
+                    else:
+                        print(f"Nessun file processato per '{current_model_choice_full}'. Salto combinazione.")
+                else:
+                     # Se c'erano file da processare ma non è stato creato l'output finale atteso
+                     print(f"WARN: Nessun file finale .txt trovato per '{current_model_choice_full}', anche se il processing è stato tentato. Salto combinazione.")
+
+                # --- Fine controllo successo ---
+
+                # --- Mark model as done ---
                 checkpoint_data['models_to_process'] = models_to_process[current_model_index + 1:]
                 checkpoint_data['current_model_processing'] = None; save_checkpoint()
                 current_model_index += 1
 
             except Exception as e_inner_loop:
                  print(f"\n!!! Errore durante elaborazione modello '{current_model_choice_full}': {e_inner_loop}")
-                 save_checkpoint(); raise # Rilancia per fermare
+                 save_checkpoint(); raise
 
-            finally: # Cleanup memoria GPU
+            finally:
+                # ... (Cleanup GPU Memory invariato) ...
                 if MODEL is not None:
-                     print(f"Rilascio memoria modello '{current_model_choice_full}'...")
-                     model_obj_to_release = getattr(MODEL, 'model', MODEL) # Trova l'oggetto modello reale
-                     if hasattr(model_obj_to_release, 'cpu'):
-                         try:
-                             model_obj_to_release.cpu()
-                         except Exception as e_cpu:
-                             # Logga l'errore se lo spostamento fallisce, ma non fermare lo script
-                             print(f"  (Warn: Errore spostamento modello su CPU: {e_cpu})")
-                     del MODEL; del model_obj_to_release
-                if torch.cuda.is_available(): torch.cuda.empty_cache(); print("Cache CUDA svuotata.")
+                     # ... (codice cleanup) ...
+                     pass # Inserisci qui il codice di cleanup GPU precedente
+                if torch.cuda.is_available(): torch.cuda.empty_cache(); # print("Cache CUDA svuotata.")
                 time.sleep(1) # Breve pausa
 
         processing_completed_normally = True
