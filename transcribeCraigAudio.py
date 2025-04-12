@@ -293,15 +293,38 @@ if __name__ == "__main__":
     prevent_sleep() # Attiva anti-standby
 
     # --- Load Checkpoint or Initialize ---
-    if load_checkpoint():
+    checkpoint_found = load_checkpoint() # load_checkpoint ora ritorna True/False
+
+    if checkpoint_found:
         print(f"Ripresa da checkpoint. Modello originale: '{checkpoint_data.get('original_model_choice', 'N/A')}'")
         print(f"Modelli rimasti: {checkpoint_data.get('models_to_process', [])}")
         print(f"Directory input originale: {checkpoint_data.get('base_input_directory', 'N/A')}")
-        resume = input("Vuoi riprendere la sessione? (s/n): ").strip().lower()
-        if resume != 's': print("Avvio nuova sessione."); checkpoint_data = {}; load_checkpoint()
+        while True:
+             resume = input("Vuoi riprendere la sessione precedente? (s/n): ").strip().lower()
+             if resume in ['s', 'n']:
+                  break
+             else:
+                  print("Risposta non valida. Inserisci 's' per sì o 'n' per no.")
 
-    # --- Get User Input if needed ---
-    if not checkpoint_data:
+        if resume == 'n':
+            print("Avvio nuova sessione. RIMOZIONE del checkpoint precedente...")
+            try:
+                if os.path.exists(CHECKPOINT_FILE):
+                    os.remove(CHECKPOINT_FILE)
+                    print(f"File di checkpoint '{CHECKPOINT_FILE}' rimosso.")
+                checkpoint_data = {} # Resetta i dati in memoria
+                checkpoint_found = False # Segna che non stiamo più usando un checkpoint caricato
+            except OSError as e:
+                print(f"ATTENZIONE: Impossibile rimuovere il file di checkpoint '{CHECKPOINT_FILE}': {e}")
+                print("Lo script continuerà come nuova sessione, ma il vecchio file potrebbe rimanere.")
+                checkpoint_data = {} # Resetta comunque i dati in memoria
+                checkpoint_found = False
+        else:
+             print("Ripresa della sessione dal checkpoint.")
+             # checkpoint_data è già popolato da load_checkpoint()
+
+    # --- Get User Input if NO valid checkpoint exists or user chose NOT to resume ---
+    if not checkpoint_found: # Esegui solo se non abbiamo caricato e scelto 's'
         print("\n--- Nuova Sessione ---")
         while True:
             print("\nModelli disponibili (specificare modello-dimensione):")
@@ -314,37 +337,34 @@ if __name__ == "__main__":
             print("  whispy_italian        (Fine-tuned Italiano via HF)")
             print("  entrambi              (Esegue whisper-medium poi hf_whisper-medium)")
             original_model_choice_input = input("Scegli modello (es. 'whisper-largev2', 'entrambi'): ").strip().lower()
-
             valid_choices = ["whisper-medium", "whisper-largev2", "whisper-largev3",
                              "hf_whisper-medium", "hf_whisper-largev2", "hf_whisper-largev3",
                              "whispy_italian", "entrambi"]
             if original_model_choice_input in valid_choices: break
             else: print("Scelta non valida.")
-
         while True:
             base_input_directory = input('Inserisci directory audio originale: ').strip()
             if os.path.isdir(base_input_directory): break
             else: print(f"Errore: '{base_input_directory}' non è una directory valida.")
 
-        # Determina i modelli da processare
         models_to_process_list = []
         if original_model_choice_input == "entrambi":
-            # Definisci qui quali modelli eseguire per "entrambi"
             models_to_process_list = ["whisper-medium", "hf_whisper-medium"]
             print("Opzione 'entrambi' selezionata: verranno eseguiti 'whisper-medium' e 'hf_whisper-medium'.")
         else:
             models_to_process_list = [original_model_choice_input]
 
+        # Inizializza checkpoint_data per la nuova sessione
         checkpoint_data = {
             "base_input_directory": base_input_directory,
-            "original_model_choice": original_model_choice_input, # Salva scelta utente originale
-            "models_to_process": models_to_process_list, # Lista dei modelli da eseguire
+            "original_model_choice": original_model_choice_input,
+            "models_to_process": models_to_process_list,
             "files_processed": {},
             "current_model_processing": None,
             "last_saved": None
         }
-        print("Dati sessione inizializzati.")
-        save_checkpoint()
+        print("Dati nuova sessione inizializzati.")
+        # Non salviamo il checkpoint qui, verrà salvato al primo file processato o interruzione
 
     # --- Setup Directories ---
     base_input_dir = checkpoint_data['base_input_directory']
