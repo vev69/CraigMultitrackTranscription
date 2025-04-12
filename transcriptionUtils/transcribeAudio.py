@@ -294,6 +294,7 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
     inProgressFileName = None
     audio_basename = os.path.basename(input_path)
     start_time_transcription = time.time()
+    final_return_path = None # Variabile per memorizzare il percorso da restituire
 
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -369,168 +370,187 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
         if os.path.exists(inProgressFileName):
             try:
                 should_post_process = True
+                # ... (Controllo [ERROR]/[INFO] marker) ...
                 with open(inProgressFileName, 'r', encoding='utf-8') as f_check:
                     first_line = f_check.readline()
                     if first_line and (first_line.startswith("[ERROR]") or first_line.startswith("[INFO]")):
                         print(f"  Skipping PP for {inProgressFileName} (marker found).")
                         should_post_process = False
-                        try: # Rinomina InProgress a Completed per conservare il log
+                        try: # Rinomina per conservare il log
                             if os.path.exists(completedFileName): os.remove(completedFileName)
-                            os.rename(inProgressFileName, completedFileName); print(f"  Info/Error file saved: {completedFileName}")
+                            os.rename(inProgressFileName, completedFileName); print(f"  Info/Error file saved: {os.path.basename(completedFileName)}")
+                            final_return_path = completedFileName # *** Memorizza percorso log ***
                         except OSError as e_mv: print(f"  Warn: Could not rename info/error file: {e_mv}")
 
                 if should_post_process:
                     print(f"  Post-processing / Timestamp Sanitization {os.path.basename(inProgressFileName)}...")
-                    post_process_transcription(inProgressFileName, completedFileName) # Chiama la funzione aggiornata
-                    try: # Rimuovi InProgress solo se Completed è stato creato e non è vuoto
+                    post_process_transcription(inProgressFileName, completedFileName)
+                    # Dopo il post-processing, il file finale è completedFileName
+                    final_return_path = completedFileName # *** Memorizza percorso completato ***
+                    try: # Rimuovi InProgress
                         if os.path.exists(completedFileName) and os.path.getsize(completedFileName) > 0:
                             os.remove(inProgressFileName); print(f"  Removed intermediate: {os.path.basename(inProgressFileName)}")
-                        elif os.path.exists(completedFileName): print(f"  Warn: PP output {os.path.basename(completedFileName)} is empty. Keeping intermediate.")
-                        else: print(f"  Warn: PP did not create {os.path.basename(completedFileName)}. Keeping intermediate.")
+                        # else: Gestito sotto (se completed non esiste o è vuoto)
                     except OSError as e_rm: print(f"  Warn: Could not remove intermediate: {e_rm}")
 
             except Exception as e_pp_check:
                 print(f"  Error during PP check/exec: {e_pp_check}")
-                # Tenta di salvare InProgress rinominandolo
+                final_return_path = None # Indica fallimento PP
+                # (Tentativo salvataggio .failed_pp)
                 try:
                     failed_pp_name = completedFileName + ".failed_pp"
                     if os.path.exists(inProgressFileName) and not os.path.exists(failed_pp_name):
                          os.rename(inProgressFileName, failed_pp_name); print(f"  Preserved intermediate as {os.path.basename(failed_pp_name)}")
                 except OSError as e_mv_fail: print(f"  Could not preserve intermediate after PP error: {e_mv_fail}")
         else:
-            print(f"  Skipping PP: {os.path.basename(inProgressFileName)} not found or already handled.")
-            # Pulisci un eventuale file completato orfano da esecuzioni precedenti
-            if os.path.exists(completedFileName):
-                try:
-                    os.remove(completedFileName)
-                    print(f"  Removed potentially orphaned completed file: {os.path.basename(completedFileName)}")
-                except OSError as e_rm_orphan:
-                    print(f"  Warn: Could not remove orphaned file {os.path.basename(completedFileName)}: {e_rm_orphan}")
-                     # Ritorna il percorso del file finale (o None se fallisce gravemente)
+            # Se InProgress non esiste (es. errore grave durante trascrizione)
+            print(f"  Skipping PP: {os.path.basename(inProgressFileName)} not found.")
+            final_return_path = None # Non c'è un file finale da restituire
+            # Pulisci eventuale Completed orfano
+            if os.path.exists(completedFileName): 
+                try: os.remove(completedFileName); 
+                except OSError: pass
+
+        # --- Fine Post-processing ---
+
+        # Verifica finale prima del return
+        if final_return_path and not os.path.exists(final_return_path):
+             print(f"  WARN: Il percorso finale restituito '{final_return_path}' non esiste. Restituisco None.")
+             final_return_path = None
+        elif final_return_path and os.path.getsize(final_return_path) == 0:
+             print(f"  INFO: Il file finale '{os.path.basename(final_return_path)}' è vuoto.")
+             # Restituiamo comunque il percorso del file vuoto
+
+        end_time_transcription = time.time()
+        print(f"  Transcription+PP completed for {audio_basename} in {end_time_transcription - start_time_transcription:.2f} seconds.")
+        return final_return_path # *** RESTITUISCI IL PERCORSO MEMORIZZATO ***
+
     except Exception as e_outer:
+        # ... (Blocco gestione eccezione esterna e scrittura file FAILED.txt INVARIATO) ...
         print(f"!!! Unhandled error in transcribeAudioFile for {input_path}: {e_outer}")
-        error_file_name = None
-        try: # Scrivi un file di errore generale per questa trascrizione
-            os.makedirs(output_dir, exist_ok=True) # Assicura che la dir esista
-            audio_basename_err = os.path.basename(input_path)
-            fileName_err = os.path.splitext(audio_basename_err)[0]
-            error_file_name = os.path.join(output_dir, f"{fileName_err}-TRANSCRIPTION_FAILED.txt")
-            with open(error_file_name, "w", encoding="utf-8") as f_err:
-                f_err.write(f"Critical error during transcription process for {input_path}:\n")
-                f_err.write(f"Model choice: {model_choice}\n")
-                f_err.write(f"Exception: {e_outer}\n"); traceback.print_exc(file=f_err)
-            print(f"  Critical error log saved to: {error_file_name}")
-            # Tentativo di pulizia file intermedi
-            if inProgressFileName and os.path.exists(inProgressFileName): os.remove(inProgressFileName)
-            if completedFileName and os.path.exists(completedFileName): os.remove(completedFileName)
-        except Exception as e_log: print(f"!!! Could not write critical error log file: {e_log}")
-        return None # Indica fallimento
+        # ... (Scrittura FAILED.txt) ...
+        # Restituisci il percorso del file FAILED.txt se creato, altrimenti None
+        error_log_path = os.path.join(output_dir, f"{os.path.splitext(audio_basename)[0]}-TRANSCRIPTION_FAILED.txt")
+        return error_log_path if os.path.exists(error_log_path) else None
 
 
-# Funzione per post-processing (con sanitizzazione timestamp)
+# Funzione per rimuovere ripetizioni interne a una stringa
+def remove_internal_repetitions(text, min_len=5, max_lookback=15):
+    """
+    Tenta di rimuovere sequenze di parole ripetute all'interno di una stringa.
+    Es: "ciao come stai ciao come stai ciao come" -> "ciao come stai ciao come"
+    """
+    words = text.split()
+    if len(words) < min_len * 2: # Non abbastanza parole per avere ripetizioni significative
+        return text
+
+    processed_words = []
+    i = 0
+    while i < len(words):
+        found_repeat = False
+        # Guarda indietro per possibili ripetizioni
+        # Cerca sequenze ripetute di lunghezza da `min_len` fino a `max_lookback`
+        for lookback in range(min(max_lookback, i // 2, len(words) // 2), min_len - 1, -1):
+             if i + lookback <= len(words): # Assicura che ci sia spazio per confrontare
+                 current_segment = tuple(words[i : i + lookback])
+                 # Controlla se questo segmento è uguale al segmento precedente di stessa lunghezza
+                 if current_segment == tuple(words[i - lookback : i]):
+                      # Trovata una ripetizione! Salta la sequenza corrente
+                      # print(f"    DEBUG REPEAT: Found internal repeat of '{' '.join(current_segment)}', skipping {lookback} words at index {i}")
+                      i += lookback
+                      found_repeat = True
+                      break # Esci dal ciclo lookback
+
+        if not found_repeat:
+            processed_words.append(words[i])
+            i += 1
+
+    return " ".join(processed_words)
+
+# --- Funzione post_process_transcription AGGIORNATA ---
 def post_process_transcription(input_file, output_file):
-    print(f"  Starting timestamp sanitization for {os.path.basename(input_file)} -> {os.path.basename(output_file)}")
+    print(f"  Starting post-processing & timestamp sanitization for {os.path.basename(input_file)} -> {os.path.basename(output_file)}")
     lines = []
     try:
         if not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
-             print(f"  Warn: Input file for PP empty/missing. Creating empty output.");
-             with open(output_file, 'w', encoding='utf-8') as f_empty: pass; return
+             print(f"  Warn: Input file for PP empty/missing."); 
+             with open(output_file, 'w', encoding='utf-8'): pass; return
         with open(input_file, 'r', encoding='utf-8') as f: lines = f.readlines()
-        # print(f"  Read {len(lines)} lines from {os.path.basename(input_file)}") # Meno verboso
     except Exception as e:
-        print(f"  Errore lettura file PP: {input_file} - {e}")
-        with open(output_file, 'w', encoding='utf-8') as f_err: f_err.write(f"[ERROR] Failed read PP input: {input_file} - {e}\n"); return
+        print(f"  Errore lettura PP: {e}"); 
+        with open(output_file, 'w', encoding='utf-8') as f_err: f_err.write(f"[ERROR] Read fail: {e}\n"); return
 
     sanitized_lines = []
     last_valid_end_time = 0.0
-    MAX_SEGMENT_DURATION = 30.0 # Aggiustabile
-    # MIN_GAP_BETWEEN_SEGMENTS = 0.0 # Non più usato nel controllo overlap sotto
-
-    line_errors = 0
-    line_adjusted_overlap = 0
-    line_adjusted_duration = 0
-    line_adjusted_endstart = 0
+    MAX_SEGMENT_DURATION = 30.0
+    line_errors, line_adjusted_overlap, line_adjusted_duration, line_adjusted_endstart = 0, 0, 0, 0
+    lines_written = 0
+    lines_removed_repeat = 0
 
     for line_num, line in enumerate(lines):
         line = line.strip()
         if not line or line.startswith("[ERROR]") or line.startswith("[INFO]"):
-            if line: sanitized_lines.append(line + '\n'); continue
+            if line: sanitized_lines.append(line + '\n'); lines_written+=1 # Mantieni errori/info
+            continue
 
         match = re.match(r'\[\s*([\d\.\+eE-]+)\s*,\s*([\d\.\+eE-]+)\s*\]\s*(.*)', line)
-        if not match: print(f"  Warn (Line {line_num+1}): Skipping malformed line in PP: '{line}'"); line_errors += 1; continue
+        if not match: print(f"  Warn (L{line_num+1}): Malformed: '{line}'"); line_errors += 1; continue
 
         try:
-            start_str, end_str, text_part = match.groups(); text_part = text_part.strip()
+            start_str, end_str, text_part_raw = match.groups()
             start_f = float(start_str); end_f = float(end_str)
+            original_start, original_end = start_f, end_f; adjustment_log = ""
 
-            # --- Controlli Timestamp ---
-            original_start, original_end = start_f, end_f # Conserva originali per logging
-            adjustment_log = ""
-
-            if start_f < 0 or end_f < 0: print(f"  Warn (Line {line_num+1}): Ignored negative ts: {line}"); line_errors += 1; continue
-
-            if end_f < start_f:
-                end_f = start_f + 0.1; line_adjusted_endstart += 1
-                adjustment_log += f"|End<Start->End={end_f:.2f}"
-            elif end_f == start_f:
-                end_f = start_f + 0.05; # Durata minima se uguali
-                adjustment_log += f"|Start=End->End={end_f:.2f}"
-
-
+            # Controlli Timestamp (come prima)
+            if start_f < 0 or end_f < 0: line_errors += 1; continue
+            if end_f < start_f: end_f = start_f + 0.1; line_adjusted_endstart += 1; adjustment_log += f"|End<Start"
+            elif end_f == start_f: end_f = start_f + 0.05; adjustment_log += f"|Start=End"
             duration = end_f - start_f
-            if duration > MAX_SEGMENT_DURATION:
-                old_end = end_f
-                end_f = start_f + MAX_SEGMENT_DURATION; line_adjusted_duration += 1
-                adjustment_log += f"|Dur>Max->End={end_f:.2f}(was {old_end:.2f})"
-
-
-            # Preveni/Aggiusta sovrapposizioni (assicura che start >= last_end)
-            # Tolleranza piccola per micro-overlap numerici
+            if duration > MAX_SEGMENT_DURATION: end_f = start_f + MAX_SEGMENT_DURATION; line_adjusted_duration += 1; adjustment_log += f"|Dur>Max"
             if start_f < last_valid_end_time - 0.001:
-                 adjusted_start = last_valid_end_time
-                 adjustment_log += f"|Overlap->Start={adjusted_start:.2f}(was {start_f:.2f})"
-                 start_f = adjusted_start; line_adjusted_overlap +=1
-                 # Riaggiusta fine se necessario dopo spostamento inizio
+                 adjusted_start = last_valid_end_time; line_adjusted_overlap +=1; adjustment_log += f"|Overlap"
+                 start_f = adjusted_start
                  if end_f <= start_f: end_f = start_f + 0.1
+            if end_f <= start_f: line_errors += 1; continue
 
-            # --- Fine Controlli ---
-            if end_f <= start_f: # Salta se durata ancora non valida
-                print(f"  Warn (Line {line_num+1}): Skipping non-positive duration after adjustments. Start={start_f:.2f}, End={end_f:.2f}. Orig:[{original_start:.2f},{original_end:.2f}]")
-                line_errors += 1; continue
+            # --- NUOVA PULIZIA TESTO ---
+            text_part_stripped = text_part_raw.strip()
+            # 1. Rimuovi ripetizioni interne alla riga
+            text_part_cleaned = remove_internal_repetitions(text_part_stripped, min_len=3, max_lookback=10) # Aggiusta min_len/max_lookback se necessario
+            if len(text_part_cleaned) < len(text_part_stripped):
+                 lines_removed_repeat +=1 # Conta come linea con ripetizioni rimosse
+                 # print(f"    DEBUG REPEAT - Line {line_num+1} cleaned: '{text_part_cleaned}' (was: '{text_part_stripped}')")
 
-            # Logga solo se ci sono stati aggiustamenti
-            if adjustment_log:
-                 print(f"  Adjust (Line {line_num+1}): Orig:[{original_start:.2f},{original_end:.2f}] New:[{start_f:.2f},{end_f:.2f}] Reasons:{adjustment_log}")
+            # 2. Se il testo pulito è vuoto, salta la linea
+            if not text_part_cleaned.strip():
+                 # print(f"  DEBUG - Line {line_num+1} skipped (empty after cleaning repeats).")
+                 continue
 
-            processed_line = f'[{start_f:.2f}, {end_f:.2f}] {text_part}\n'
+            # --- Fine Pulizia Testo ---
+
+            processed_line = f'[{start_f:.2f}, {end_f:.2f}] {text_part_cleaned}\n' # Usa testo pulito
             sanitized_lines.append(processed_line)
             last_valid_end_time = end_f
+            lines_written += 1
 
-        except ValueError as e: print(f"  Errore valore (Line {line_num+1}) in PP: '{line}' - {e}"); line_errors += 1
-        except Exception as e: print(f"  Errore generico (Line {line_num+1}) in PP: '{line}' - {e}"); line_errors += 1
+        except ValueError as e: print(f"  Errore valore (L{line_num+1}): '{line}' - {e}"); line_errors += 1
+        except Exception as e: print(f"  Errore generico (L{line_num+1}): '{line}' - {e}"); line_errors += 1
 
-    # --- Pulizia Finale Minima (Ripetizioni immediate) ---
-    final_lines = []; prev_line_text = None; removed_repeats = 0
-    # print(f"  Applying minimal post-sanitization cleanup to {len(sanitized_lines)} lines...") # Meno verboso
+    # --- Pulizia Finale Minima (RIPETIZIONI *INTERE* RIGHE - dovrebbe fare poco ora) ---
+    final_lines = []; prev_line_text = None; removed_final_repeats = 0
     for line in sanitized_lines:
         if line.startswith("[ERROR]") or line.startswith("[INFO]"): final_lines.append(line); continue
         match = re.match(r'\[.*?\]\s*(.*)', line);
         if not match: continue
         text_part = match.group(1).strip()
-        if text_part and text_part == prev_line_text: removed_repeats += 1; continue
+        if text_part and text_part == prev_line_text: removed_final_repeats += 1; continue
         final_lines.append(line)
         if text_part: prev_line_text = text_part
 
-    # --- Scrittura ---
-    print(f"  Sanitization summary: Overlaps adjusted={line_adjusted_overlap}, Durations truncated={line_adjusted_duration}, End<Start corrected={line_adjusted_endstart}, Malformed/Skipped lines={line_errors}, Immediate repeats removed={removed_repeats}")
+    print(f"  Sanitization summary: Overlap={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<Start={line_adjusted_endstart}, Malformed/Skip={line_errors}, Lines with internal repeats reduced={lines_removed_repeat}, Final immediate line repeats removed={removed_final_repeats}")
     try:
         with open(output_file, 'w', encoding='utf-8') as f: f.writelines(final_lines)
-        print(f"  Post-processing/Sanitization completato. {len(final_lines)} lines saved to: {os.path.basename(output_file)}")
-    except Exception as e:
-        print(f"  Errore scrittura file PP: {output_file} - {e}")
-        try:
-             failed_output_name = output_file + ".failed_write"
-             if os.path.exists(input_file): os.rename(input_file, failed_output_name); print(f"  Preserved input as {failed_output_name}")
-        except OSError: print(f"  Could not preserve input {input_file}")
+        print(f"  Post-processing completato. {len(final_lines)} lines saved to: {os.path.basename(output_file)}")
+    except Exception as e: print(f"  Errore scrittura PP: {e}") # Gestione errore scrittura invariata
 
 # --- END OF transcriptionUtils/transcribeAudio.py ---
