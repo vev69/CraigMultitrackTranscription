@@ -468,6 +468,25 @@ def remove_internal_repetitions(text, min_len=5, max_lookback=15):
     return " ".join(processed_words)
 
 # --- Funzione post_process_transcription AGGIORNATA ---
+# NUOVA Funzione per valutare la ripetitività (sostituisce remove_internal_repetitions)
+def is_highly_repetitive(text, threshold=0.6, min_words=10):
+    """
+    Valuta se una stringa di testo è eccessivamente ripetitiva.
+    Calcola il rapporto tra parole uniche e parole totali.
+    Ritorna True se il rapporto è sotto la soglia (troppo ripetitivo), False altrimenti.
+    """
+    words = text.lower().split() # Lavora su minuscolo
+    if len(words) < min_words:
+        return False # Non valutare testi troppo corti
+
+    unique_words = set(words)
+    repetition_ratio = len(unique_words) / len(words)
+
+    # print(f"DEBUG REPETITIVE: Text='{text[:50]}...', Len={len(words)}, Unique={len(unique_words)}, Ratio={repetition_ratio:.2f}") # Log Debug
+
+    return repetition_ratio < threshold
+
+# --- Funzione post_process_transcription AGGIORNATA ---
 def post_process_transcription(input_file, output_file):
     print(f"  Starting post-processing & timestamp sanitization for {os.path.basename(input_file)} -> {os.path.basename(output_file)}")
     lines = []
@@ -482,15 +501,15 @@ def post_process_transcription(input_file, output_file):
 
     sanitized_lines = []
     last_valid_end_time = 0.0
-    MAX_SEGMENT_DURATION = 30.0
+    MAX_SEGMENT_DURATION = 30.0 # Aggiustabile
     line_errors, line_adjusted_overlap, line_adjusted_duration, line_adjusted_endstart = 0, 0, 0, 0
     lines_written = 0
-    lines_removed_repeat = 0
+    lines_removed_repetitive = 0 # Contatore per righe scartate
 
     for line_num, line in enumerate(lines):
         line = line.strip()
         if not line or line.startswith("[ERROR]") or line.startswith("[INFO]"):
-            if line: sanitized_lines.append(line + '\n'); lines_written+=1 # Mantieni errori/info
+            if line: sanitized_lines.append(line + '\n'); lines_written+=1
             continue
 
         match = re.match(r'\[\s*([\d\.\+eE-]+)\s*,\s*([\d\.\+eE-]+)\s*\]\s*(.*)', line)
@@ -513,22 +532,25 @@ def post_process_transcription(input_file, output_file):
                  if end_f <= start_f: end_f = start_f + 0.1
             if end_f <= start_f: line_errors += 1; continue
 
-            # --- NUOVA PULIZIA TESTO ---
+            # --- NUOVA PULIZIA TESTO (SCARTA SE RIPETITIVO) ---
             text_part_stripped = text_part_raw.strip()
-            # 1. Rimuovi ripetizioni interne alla riga
-            text_part_cleaned = remove_internal_repetitions(text_part_stripped, min_len=3, max_lookback=10) # Aggiusta min_len/max_lookback se necessario
-            if len(text_part_cleaned) < len(text_part_stripped):
-                 lines_removed_repeat +=1 # Conta come linea con ripetizioni rimosse
-                 # print(f"    DEBUG REPEAT - Line {line_num+1} cleaned: '{text_part_cleaned}' (was: '{text_part_stripped}')")
 
-            # 2. Se il testo pulito è vuoto, salta la linea
-            if not text_part_cleaned.strip():
-                 # print(f"  DEBUG - Line {line_num+1} skipped (empty after cleaning repeats).")
+            # 1. Salta la linea se il testo è vuoto
+            if not text_part_stripped:
+                 # print(f"  DEBUG - Line {line_num+1} skipped (empty text).")
                  continue
 
+            # 2. Salta la linea se è altamente ripetitiva
+            if is_highly_repetitive(text_part_stripped, threshold=0.5, min_words=10): # Aggiusta threshold/min_words
+                 print(f"  Warn (Line {line_num+1}): Skipping highly repetitive line: '{text_part_stripped[:80]}...'")
+                 lines_removed_repetitive += 1
+                 continue
             # --- Fine Pulizia Testo ---
 
-            processed_line = f'[{start_f:.2f}, {end_f:.2f}] {text_part_cleaned}\n' # Usa testo pulito
+            # Logga aggiustamenti timestamp se ci sono stati
+            # if adjustment_log: print(f"  Adjust (L{line_num+1}): Orig:[{original_start:.2f},{original_end:.2f}] New:[{start_f:.2f},{end_f:.2f}] {adjustment_log}")
+
+            processed_line = f'[{start_f:.2f}, {end_f:.2f}] {text_part_stripped}\n' # Usa testo originale (solo strippato)
             sanitized_lines.append(processed_line)
             last_valid_end_time = end_f
             lines_written += 1
@@ -536,18 +558,23 @@ def post_process_transcription(input_file, output_file):
         except ValueError as e: print(f"  Errore valore (L{line_num+1}): '{line}' - {e}"); line_errors += 1
         except Exception as e: print(f"  Errore generico (L{line_num+1}): '{line}' - {e}"); line_errors += 1
 
-    # --- Pulizia Finale Minima (RIPETIZIONI *INTERE* RIGHE - dovrebbe fare poco ora) ---
+    # --- Rimozione Ripetizioni INTERE Righe (Minimale) ---
     final_lines = []; prev_line_text = None; removed_final_repeats = 0
     for line in sanitized_lines:
         if line.startswith("[ERROR]") or line.startswith("[INFO]"): final_lines.append(line); continue
         match = re.match(r'\[.*?\]\s*(.*)', line);
         if not match: continue
         text_part = match.group(1).strip()
+        # Aggiungi controllo per non rimuovere linee vuote consecutive se le vogliamo tenere
         if text_part and text_part == prev_line_text: removed_final_repeats += 1; continue
         final_lines.append(line)
-        if text_part: prev_line_text = text_part
+        # Aggiorna prev_line_text solo se la linea corrente non era vuota
+        # per permettere la rimozione di ripetizioni tipo "A B A" -> "A B"
+        if text_part:
+             prev_line_text = text_part
+        # Se vuoi rimuovere anche "A A" (due vuote di fila), rimuovi l'if sopra
 
-    print(f"  Sanitization summary: Overlap={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<Start={line_adjusted_endstart}, Malformed/Skip={line_errors}, Lines with internal repeats reduced={lines_removed_repeat}, Final immediate line repeats removed={removed_final_repeats}")
+    print(f"  Sanitization summary: Overlap={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<Start={line_adjusted_endstart}, Malformed/Skip={line_errors}, Lines discarded as repetitive={lines_removed_repetitive}, Final immediate repeats removed={removed_final_repeats}")
     try:
         with open(output_file, 'w', encoding='utf-8') as f: f.writelines(final_lines)
         print(f"  Post-processing completato. {len(final_lines)} lines saved to: {os.path.basename(output_file)}")
