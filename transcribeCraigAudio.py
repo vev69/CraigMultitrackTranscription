@@ -249,22 +249,32 @@ def transcribeFilesInDirectory(preprocessed_dir: str, model, model_choice: str, 
             # Passa il percorso del file preprocessato alla funzione di trascrizione
             output_file_path = transcribe.transcribeAudioFile(preprocessed_path, model, model_choice, output_dir)
 
-            is_successful = (output_file_path
-                             and os.path.exists(output_file_path)
-                             and "FAILED" not in os.path.basename(output_file_path).upper()) # Check più robusto per fallimenti
+            final_file_exists = output_file_path and os.path.exists(output_file_path)
+            is_explicit_failure = output_file_path and "FAILED" in os.path.basename(output_file_path).upper()
 
-            if is_successful:
-                 print(f"Trascrizione completata per {filename}.") # Output path già loggato da transcribeAudioFile
-            elif output_file_path: # Esiste un file, ma potrebbe essere un log di errore
-                 print(f"Errore/Warning durante trascrizione di {filename}. File generato: {os.path.basename(output_file_path)}")
-            else: # Fallimento grave, nessun file restituito
-                 print(f"Trascrizione fallita gravemente per {filename} (nessun percorso restituito).")
-
-            # Aggiorna checkpoint SEMPRE basato sul percorso ORIGINALE
-            filesTranscribed_original_paths.append(original_path)
-            checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
-            processed_in_this_session += 1
-            save_checkpoint() # Salva dopo ogni tentativo
+            if final_file_exists and not is_explicit_failure:
+                print(f"Trascrizione completata con successo per {filename}.")
+                # Aggiungi al checkpoint (basato su percorso originale)
+                filesTranscribed_original_paths.append(original_path)
+                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
+                processed_in_this_session += 1
+                save_checkpoint()
+            elif final_file_exists and is_explicit_failure:
+                # Un file di log errore è stato creato da transcribeAudioFile
+                print(f"ERRORE grave durante trascrizione di {filename}. Log: {os.path.basename(output_file_path)}")
+                # Marca come tentato nel checkpoint per non riprovare all'infinito
+                filesTranscribed_original_paths.append(original_path)
+                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
+                processed_in_this_session += 1
+                save_checkpoint()
+            else:
+                # Nessun file restituito o il file restituito non esiste -> Fallimento non gestito?
+                print(f"ERRORE/WARN: Trascrizione per {filename} non ha prodotto un file finale valido o ha restituito None.")
+                # Marca comunque come tentato per evitare loop
+                filesTranscribed_original_paths.append(original_path)
+                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
+                processed_in_this_session += 1
+                save_checkpoint()
 
     except Exception as e:
         print(f"Errore in transcribeFilesInDirectory: {e}")
