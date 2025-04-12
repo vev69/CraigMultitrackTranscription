@@ -84,41 +84,11 @@ def __removeRepeatHallucinations__(transcribedFile: list[TranscribedLine]) -> li
 def __removeRepeatedSequences__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]: pass
 def __sequencesAreSame__(seq1: list[TranscribedLine], seq2: list[TranscribedLine]) -> bool: pass
 
-# VERSIONE MODIFICATA CHE ESTRAE IL NOME
-
-import os # Assicurati che os e re siano importati all'inizio del file
-import re
-
 def __getSpeaker__(fileName: str) -> str:
-    """Estrae l'identificatore NOME del relatore dal nome del file"""
-    # Assumes format like '1-SpeakerName_partXXX-TranscribedAudio.txt'
-    # or '1-SpeakerName-TranscribedAudio.txt'
-    base_name = os.path.basename(fileName)
-    # Rimuovi suffissi noti in modo più robusto
-    suffixes_to_remove = ["-TranscribedAudio.txt", ".flac", ".wav"] # Aggiungi altri se necessario
-    for suffix in suffixes_to_remove:
-         if base_name.endswith(suffix):
-              base_name = base_name[:-len(suffix)]
-              break # Rimuovi solo il primo suffisso trovato
-
-    # Rimuovi la parte "_partXXX" se presente (per l'approccio con divisione)
-    base_name = re.sub(r'_part\d+$', '', base_name)
-
-    # Match pattern: Cerca "Numero-NomeQualsiasi" all'inizio
-    match = re.match(r"^\d+-(.+)", base_name) # Assicura che inizi con numero-trattino
-    if match:
-        # **** MODIFICA CHIAVE ****
-        # Ritorna il secondo gruppo catturato (il nome dopo il trattino)
-        speaker_name = match.group(1)
-        # Potrebbe essere utile rimuovere eventuali estensioni residue se il cleanup sopra non le ha prese
-        # Esempio ulteriore cleanup se il nome contenesse punti:
-        # speaker_name = os.path.splitext(speaker_name)[0]
-        return speaker_name.strip() # Rimuovi spazi extra
-        # --------------------------
-
-    # Fallback (se il formato non è Numero-Nome) - Potrebbe ritornare il nome file senza estensione
-    print(f"Warn: Formato nome file non riconosciuto per estrarre nome speaker ({fileName}). Uso base_name: '{base_name}'")
-    return os.path.splitext(base_name)[0].strip() if base_name else "unknown"
+    base_name = os.path.basename(fileName).replace("-TranscribedAudio.txt", "")
+    match = re.match(r"(\d+)-(.+)", base_name)
+    if match: return match.group(1)
+    return "unknown"
 
 def __preprocessFiles__(transcription_output_dir: str, files: list[str]) -> dict[str, list[TranscribedLine]]:
     """Preprocessa (con pulizia minima) i file di trascrizione."""
