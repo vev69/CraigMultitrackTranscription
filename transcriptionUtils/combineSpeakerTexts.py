@@ -1,284 +1,188 @@
-from dataclasses import dataclass
+# --- START OF transcriptionUtils/combineSpeakerTexts.py ---
+
+from dataclasses import dataclass, field # field non è più necessario qui
 import os
 import re
 
 SUPPORTED_FILE_EXTENSIONS = (".txt")
 
+# --- Definizione Dataclass MODIFICATA ---
+
 @dataclass
 class TranscribedLine:
+    """Rappresenta una linea letta dal file di trascrizione individuale."""
     timeStampStart: float
     timeStampEnd: float
     lineText: str
+    sourceFile: str | None = None # Per debug
 
 @dataclass
-class TranscibedLineWithSpeaker(TranscribedLine):
+class TranscibedLineWithSpeaker:
+    """Rappresenta una linea combinata con lo speaker (SENZA ereditarietà)."""
+    # Campi senza valore predefinito PRIMA
+    timeStampStart: float
+    timeStampEnd: float
+    lineText: str
     speaker: str
+    # Campi con valore predefinito DOPO
+    sourceFile: str | None = None
 
-@dataclass
-class SpeakerAndLines:
-    speaker: str
-    lines: list[TranscribedLine]
+# --- Il resto del file combineSpeakerTexts.py rimane INVARIATO ---
+# ... (copia tutto il resto del file da __readFile__ in poi dalla versione precedente) ...
 
+# Funzioni (assicurati che il resto sia corretto)
 def __readFile__(pathToFile) -> list[TranscribedLine]:
     arrLinesAndTimes = []
     try:
+        if not os.path.exists(pathToFile) or os.path.getsize(pathToFile) == 0: return []
         with open(f'{pathToFile}', 'r', encoding='utf-8') as file:
-            while line := file.readline():
-                lineComponent = __extractLineComponents__(line)
+            filename_only = os.path.basename(pathToFile)
+            for line_num, line in enumerate(file):
+                line_stripped = line.strip()
+                # Usa tupla per startswith per maggiore leggibilità/efficienza
+                if not line_stripped or line_stripped.startswith(("[ERROR]", "[INFO]")):
+                    continue
+                lineComponent = __extractLineComponents__(line_stripped, line_num + 1, pathToFile)
                 if lineComponent is not None:
+                    # Assegna sourceFile all'oggetto TranscribedLine dopo la creazione
+                    lineComponent.sourceFile = filename_only
                     arrLinesAndTimes.append(lineComponent)
-    except Exception as e:
-        print(f"Errore nella lettura del file {pathToFile}: {e}")
+    except Exception as e: print(f"Errore lettura file {pathToFile}: {e}")
     return arrLinesAndTimes
 
-def __extractLineComponents__(line) -> TranscribedLine:
-    # Pattern più robusto per estrarre timestamp e testo
-    pattern = r'\[([^,]+),\s*([^\]]+)\]\s*(.*)'
-    match = re.match(pattern, line.strip())
-    
+def __extractLineComponents__(line, line_num, filename) -> TranscribedLine | None:
+    pattern = r'\[\s*([\d\.\+eE-]+)\s*,\s*([\d\.\+eE-]+)\s*\]\s*(.*)'
+    match = re.match(pattern, line)
     if not match:
-        print(f"Formato riga non valido: {line}")
+        print(f"Warn: Formato riga non valido (File: {os.path.basename(filename)}, Line: {line_num}): {line}")
         return None
-        
     start_str, end_str, text = match.groups()
-    
     try:
-        start_time = None if start_str.lower() == 'none' else float(start_str)
-        end_time = None if end_str.lower() == 'none' else float(end_str)
-        
-        # Se uno dei timestamp è None, gestiscilo meglio
-        if start_time is None:
-            start_time = 0.0
-        if end_time is None:
-            end_time = start_time + 3.0  # Imposta una durata predefinita
-            
-        # Verifica che end_time sia maggiore di start_time
-        if end_time <= start_time:
-            end_time = start_time + 3.0
-            
+        start_time = float(start_str); end_time = float(end_str)
+        if start_time < 0 or end_time < 0:
+             print(f"Warn: Ignored negative ts (File: {os.path.basename(filename)}, Line: {line_num}): {line}")
+             return None
+        # Non correggere end<start qui, lo fa post_process_transcription
     except ValueError as e:
-        print(f"Errore di conversione dei timestamp: {start_str}, {end_str} - {e}")
+        print(f"Errore conversione ts (File: {os.path.basename(filename)}, Line: {line_num}): '{start_str}', '{end_str}' - {e}")
         return None
-        
-    # Pulisci il testo da caratteri indesiderati e spazi extra
     clean_text = text.strip()
-    
+    # Crea l'oggetto base TranscribedLine; sourceFile viene aggiunto da __readFile__
     return TranscribedLine(start_time, end_time, clean_text)
 
-def __processWhisperTranscribedAudio__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]:
-    """
-    Processa il file trascritto per migliorare la qualità rimuovendo allucinazioni
-    e combinando segmenti simili.
-    """
-    # Step 1: Rimuovi ripetizioni immediate
-    dehallucinatedFile = __removeRepeatHallucinations__(transcribedFile)
-    
-    # Step 2: Rimuovi sequenze ripetute (allucinazioni più complesse)
-    dehallucinatedFile = __removeRepeatedSequences__(dehallucinatedFile)
-    
-    # Step 3: Combina segmenti contigui con lo stesso testo
-    dehallucinatedFile = __combineContiguousSegments__(dehallucinatedFile)
-    
-    # Step 4: Rimuovi segmenti vuoti o troppo brevi
-    dehallucinatedFile = __removeEmptyOrShortSegments__(dehallucinatedFile)
-    
-    return dehallucinatedFile
+def __processWhisperTranscribedAudio__(transcribedFile: list[TranscribedLine], filename: str) -> list[TranscribedLine]:
+    """Applica solo pulizie MINIME e SICURE."""
+    if not transcribedFile: return []
+    # Rimuovi solo segmenti senza testo E con durata <= 0
+    cleaned = [line for line in transcribedFile if line.lineText or line.timeStampEnd > line.timeStampStart]
+    return cleaned
 
-def __removeEmptyOrShortSegments__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]:
-    """Rimuove segmenti vuoti o con testo troppo breve (es. solo punteggiatura)"""
-    return [line for line in transcribedFile if line.lineText.strip() and len(line.lineText.strip()) > 1]
-
-def __combineContiguousSegments__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]:
-    """Combina segmenti contigui con lo stesso testo"""
-    if not transcribedFile:
-        return []
-        
-    result = []
-    current = transcribedFile[0]
-    
-    for i in range(1, len(transcribedFile)):
-        next_line = transcribedFile[i]
-        # Se i testi sono uguali e i timestamp sono vicini, combinali
-        if (current.lineText == next_line.lineText and 
-            abs(current.timeStampEnd - next_line.timeStampStart) < 1.0):
-            current.timeStampEnd = next_line.timeStampEnd
-        else:
-            result.append(current)
-            current = next_line
-    
-    # Aggiungi l'ultimo segmento
-    result.append(current)
-    return result
-
-def __removeRepeatHallucinations__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]:
-    """Rimuove ripetizioni immediate dello stesso testo"""
-    if not transcribedFile:
-        return []
-        
-    result = [transcribedFile[0]]
-    
-    for i in range(1, len(transcribedFile)):
-        if transcribedFile[i].lineText != result[-1].lineText:
-            result.append(transcribedFile[i])
-    
-    return result
-
-def __removeRepeatedSequences__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]:
-    """
-    Rimuove sequenze ripetute di testo - una forma di allucinazione più complessa.
-    """
-    if len(transcribedFile) <= 1:
-        return transcribedFile.copy()
-        
-    cloneList = transcribedFile.copy()
-    maxSequenceLength = 10  # Limita la lunghezza massima della sequenza da cercare
-    
-    outerIndex = 0
-    while outerIndex < len(cloneList) - 1:
-        for seqLength in range(1, min(maxSequenceLength, len(cloneList) - outerIndex)):
-            # Estrai la sequenza corrente
-            currentSeq = cloneList[outerIndex:outerIndex + seqLength]
-            
-            # Cerca questa sequenza nel resto del testo
-            searchIndex = outerIndex + seqLength
-            while searchIndex + seqLength <= len(cloneList):
-                # Estrai la sequenza da confrontare
-                compareSeq = cloneList[searchIndex:searchIndex + seqLength]
-                
-                # Verifica se le sequenze sono uguali
-                if __sequencesAreSame__(currentSeq, compareSeq):
-                    # Rimuovi la sequenza ripetuta
-                    del cloneList[searchIndex:searchIndex + seqLength]
-                else:
-                    searchIndex += 1
-                    
-        outerIndex += 1
-    
-    return cloneList
-
-def __sequencesAreSame__(baseSequence: list[TranscribedLine], comparedToSequnece:list[TranscribedLine]) -> bool:
-    """Verifica se due sequenze di TranscribedLine hanno lo stesso testo"""
-    if len(baseSequence) != len(comparedToSequnece):
-        return False
-        
-    for baseLine, comparedToline in zip(baseSequence, comparedToSequnece):
-        if baseLine.lineText.strip() != comparedToline.lineText.strip():
-            return False
-    
-    return True
+# --- Definizioni funzioni non usate ---
+def __removeEmptyOrShortSegments__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]: pass
+def __combineContiguousSegments__(transcribedFile: list[TranscribedLine], max_gap_s: float = 1.0) -> list[TranscribedLine]: pass
+def __removeRepeatHallucinations__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]: pass
+def __removeRepeatedSequences__(transcribedFile: list[TranscribedLine]) -> list[TranscribedLine]: pass
+def __sequencesAreSame__(seq1: list[TranscribedLine], seq2: list[TranscribedLine]) -> bool: pass
 
 def __getSpeaker__(fileName: str) -> str:
-    """Estrae l'identificatore del relatore dal nome del file"""
-    # Cerca il nome del relatore utilizzando pattern più robusto
-    match = re.search(r'(\d+)\.flac', fileName)
-    if match:
-        return match.group(1)
-    
-    # Usa la logica originale come fallback
-    endIndex = fileName.find('.flac')
-    if endIndex == -1:
-        endIndex = fileName.find('-TranscribedAudio.txt')
-    
-    return fileName[2:endIndex] if endIndex > 2 else "unknown"
+    base_name = os.path.basename(fileName).replace("-TranscribedAudio.txt", "")
+    match = re.match(r"(\d+)-(.+)", base_name)
+    if match: return match.group(1)
+    return "unknown"
 
-def __preprocessFiles__(path: str, files: list[str]) -> dict[str, list[TranscribedLine]]:
-    """Preprocessa tutti i file di trascrizione nella directory"""
+def __preprocessFiles__(transcription_output_dir: str, files: list[str]) -> dict[str, list[TranscribedLine]]:
+    """Preprocessa (con pulizia minima) i file di trascrizione."""
     allFiles = {}
-    for file in files:
-        if file.endswith(SUPPORTED_FILE_EXTENSIONS) and "TranscribedAudio.txt" in file:
-            try:
-                transcribedFile = __readFile__(f'{path}{os.sep}{file}')
-                if transcribedFile:
-                    cleanedUpFile = __processWhisperTranscribedAudio__(transcribedFile)
-                    speaker = __getSpeaker__(file)
-                    allFiles[speaker] = cleanedUpFile
-                    print(f"Processato file {file} - {len(cleanedUpFile)} segmenti")
-                else:
-                    print(f"Nessun contenuto valido nel file {file}")
-            except Exception as e:
-                print(f"Errore nel processare il file {file}: {e}")
-    
+    print(f"Preprocessing files in directory: {transcription_output_dir}")
+    sorted_files = sorted([f for f in files if f.endswith(SUPPORTED_FILE_EXTENSIONS) and "-TranscribedAudio.txt" in f and "-InProgress" not in f and ".failed" not in f])
+    print(f"Found {len(sorted_files)} potential transcription files.")
+    for file in sorted_files:
+        filePath = os.path.join(transcription_output_dir, file)
+        try:
+            transcribedFile = __readFile__(filePath) # Legge come lista di TranscribedLine
+            if transcribedFile:
+                cleanedUpFile = __processWhisperTranscribedAudio__(transcribedFile, file) # Pulisce lista di TranscribedLine
+                if not cleanedUpFile: continue
+                speaker = __getSpeaker__(file)
+                if speaker != "unknown":
+                    if speaker in allFiles: allFiles[speaker].extend(cleanedUpFile)
+                    else: allFiles[speaker] = cleanedUpFile
+                    allFiles[speaker].sort(key=lambda x: x.timeStampStart) # Ordina le linee per questo speaker
+        except Exception as e: print(f"Errore processing file {file}: {e}")
+    print(f"Finished preprocessing. Read data for {len(allFiles)} speakers.")
     return allFiles
 
 def __combineSpeakers__(speakerLines: dict[str, list[TranscribedLine]]) -> list[TranscibedLineWithSpeaker]:
-    """Combina le trascrizioni di tutti i relatori in una singola lista ordinata per timestamp"""
-    if not speakerLines:
-        print("Nessun file di trascrizione valido trovato")
-        return []
-        
-    indices = {speaker: 0 for speaker in speakerLines}
-    allLines = []
-    
-    # Identifica quali speaker hanno ancora linee da processare
-    iterableIndices = [speaker for speaker, lines in speakerLines.items() if indices[speaker] < len(lines)]
-    
-    while iterableIndices:
-        # Mappa ogni speaker alla sua prossima linea
-        speaker_lines = []
-        for speaker in iterableIndices:
-            if indices[speaker] < len(speakerLines[speaker]):
-                speaker_lines.append((speaker, speakerLines[speaker][indices[speaker]]))
-        
-        # Ordina per timestamp di inizio
-        if speaker_lines:
-            speaker_lines.sort(key=lambda x: x[1].timeStampStart)
-            speaker, line = speaker_lines[0]
-            
-            # Aggiungi la linea alla lista combinata
-            allLines.append(TranscibedLineWithSpeaker(
-                speaker=speaker,
-                timeStampStart=line.timeStampStart,
-                timeStampEnd=line.timeStampEnd,
-                lineText=line.lineText
+    """Combina le trascrizioni e ordina."""
+    if not speakerLines: print("Nessun dato speaker da combinare."); return []
+    allLinesWithSpeaker = []
+    print("\nCombining speaker lines...")
+    for speaker, lines in speakerLines.items():
+        for line in lines: # 'line' qui è un oggetto TranscribedLine
+            # Controllo validità dati
+            if not isinstance(line.timeStampStart, (int, float)) or \
+               not isinstance(line.timeStampEnd, (int, float)) or \
+               line.timeStampStart < 0 or line.timeStampEnd < line.timeStampStart:
+                 print(f"    DEBUG - Skipping invalid line for speaker {speaker}: Start={line.timeStampStart}, End={line.timeStampEnd}, File={line.sourceFile}")
+                 continue
+            # Crea l'oggetto TranscibedLineWithSpeaker usando i campi di TranscribedLine
+            allLinesWithSpeaker.append(TranscibedLineWithSpeaker(
+                timeStampStart=line.timeStampStart, # Campo da TranscribedLine
+                timeStampEnd=line.timeStampEnd,     # Campo da TranscribedLine
+                lineText=line.lineText,         # Campo da TranscribedLine
+                speaker=speaker,                # Variabile speaker corrente
+                sourceFile=line.sourceFile      # Campo da TranscribedLine (può essere None)
             ))
-            
-            # Avanza all'indice successivo per questo speaker
-            indices[speaker] += 1
-        
-        # Aggiorna la lista degli speaker che hanno ancora linee da processare
-        iterableIndices = [speaker for speaker, lines in speakerLines.items() if indices[speaker] < len(lines)]
-    
-    return allLines
+    initial_count = len(allLinesWithSpeaker)
+    print(f"Total lines read before sorting: {initial_count}")
+    if not allLinesWithSpeaker: return []
+    try:
+        allLinesWithSpeaker.sort(key=lambda x: x.timeStampStart)
+        print(f"Sorting complete. Final line count: {len(allLinesWithSpeaker)}")
+    except Exception as e_sort: print(f"!!! ERRORE SORTING: {e_sort}"); return []
+
+    # DEBUG
+    print("\nDEBUG - First 10 sorted lines:")
+    for i, line in enumerate(allLinesWithSpeaker[:10]): print(f"  {i+1}: [{line.timeStampStart:.2f}-{line.timeStampEnd:.2f}] {line.speaker}: {line.lineText[:50]}... (From: {line.sourceFile})")
+    print("DEBUG - Last 10 sorted lines:")
+    for i, line in enumerate(allLinesWithSpeaker[-10:]): print(f"  {initial_count-10+i+1}: [{line.timeStampStart:.2f}-{line.timeStampEnd:.2f}] {line.speaker}: {line.lineText[:50]}... (From: {line.sourceFile})")
+
+    return allLinesWithSpeaker
 
 def __writeTranscript__(filePathAndName: str, lines: list[TranscibedLineWithSpeaker]):
-    """Scrive la trascrizione combinata in un file"""
+    """Scrive la trascrizione combinata."""
+    if not lines: print("Nessuna linea da scrivere."); return
     try:
+        os.makedirs(os.path.dirname(filePathAndName), exist_ok=True)
         with open(filePathAndName, 'w', encoding='utf-8') as file:
-            for line in lines:
-                # Aggiungi timestamp al file di output per riferimento
-                file.write(f'[{line.timeStampStart:.2f}-{line.timeStampEnd:.2f}] {line.speaker}: {line.lineText.lstrip()}\n')
-        print(f"Trascrizione combinata salvata in: {filePathAndName}")
-    except Exception as e:
-        print(f"Errore nella scrittura del file {filePathAndName}: {e}")
+            print(f"Writing combined transcript to: {filePathAndName}")
+            line_count = 0
+            for line_index, line in enumerate(lines):
+                try:
+                     start_f = float(line.timeStampStart); end_f = float(line.timeStampEnd)
+                     if start_f < 0 or end_f < start_f: continue
+                     file.write(f'[{start_f:.2f}-{end_f:.2f}] {line.speaker}: {line.lineText.lstrip()}\n')
+                     line_count += 1
+                except Exception as e_write_line: print(f"Errore scrittura linea {line_index+1}: {e_write_line} - Dati: {line}")
+            print(f"Trascrizione combinata salvata ({line_count}/{len(lines)} righe scritte).")
+    except Exception as e: print(f"Errore scrittura file combinato {filePathAndName}: {e}")
 
-def combineTranscribedSpeakerFiles(directoryOfFiles):
-    """Funzione principale che combina i file di trascrizione in un unico documento"""
-    print(f"Elaborazione dei file di trascrizione nella directory: {directoryOfFiles}")
-    
+def combineTranscribedSpeakerFiles(transcription_output_dir: str):
+    """Funzione principale che combina i file."""
+    print(f"\n--- Combinazione Trascrizioni per: {transcription_output_dir} ---")
+    if not os.path.isdir(transcription_output_dir): print(f"Errore: Directory non trovata: {transcription_output_dir}"); return
     try:
-        directoryListDir = os.listdir(directoryOfFiles)
-        
-        # Preprocessa i file
-        preProcessedFiles = __preprocessFiles__(directoryOfFiles, directoryListDir)
-        
-        if not preProcessedFiles:
-            print("Nessun file di trascrizione valido trovato nella directory")
-            return
-            
-        # Combina le trascrizioni
+        directoryListDir = os.listdir(transcription_output_dir)
+        preProcessedFiles = __preprocessFiles__(transcription_output_dir, directoryListDir)
+        if not preProcessedFiles: print(f"Nessun file valido trovato in {transcription_output_dir}."); return
         combinedTranscripts = __combineSpeakers__(preProcessedFiles)
-        
-        if not combinedTranscripts:
-            print("Nessuna trascrizione combinata generata")
-            return
-            
-        # Determina il nome del file di output
-        lastSeparator = directoryOfFiles.rfind(os.sep)
-        baseName = directoryOfFiles[lastSeparator+1:] if lastSeparator >= 0 else directoryOfFiles
-        name = f'{directoryOfFiles}{os.sep}{baseName}AllAudio.txt'
-        
-        # Scrivi il file combinato
-        __writeTranscript__(name, combinedTranscripts)
-        
-    except Exception as e:
-        print(f"Errore durante la combinazione dei file: {e}")
+        if not combinedTranscripts: print("Nessuna trascrizione combinata generata."); return
+        model_name = os.path.basename(transcription_output_dir);
+        if not model_name: model_name = "combined"
+        output_filename = f'{model_name}_AllAudio.txt'
+        full_output_path = os.path.join(transcription_output_dir, output_filename)
+        __writeTranscript__(full_output_path, combinedTranscripts)
+    except FileNotFoundError: print(f"Errore: Directory non trovata durante combinazione: {transcription_output_dir}")
+    except Exception as e: print(f"Errore generico durante combinazione per {transcription_output_dir}: {e}")
+
+# --- END OF transcriptionUtils/combineSpeakerTexts.py ---
