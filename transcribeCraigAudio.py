@@ -1,4 +1,4 @@
-# --- START OF transcribeCraigAudio.py ---
+# --- START OF transcribeCraigAudio.py (MODIFICATO) ---
 
 import os
 import json
@@ -6,12 +6,15 @@ import sys
 import signal
 import transcriptionUtils.transcribeAudio as transcribe
 import transcriptionUtils.combineSpeakerTexts as combineSpeakers
+# NUOVA IMPORTAZIONE PER IL PREPROCESSING PARALLELO
+import transcriptionUtils.preprocessAudioFiles as preprocessor
 import torch
 import shutil
 import platform
 import time
+import atexit # Assicurati sia importato
 
-# --- Moduli specifici per OS per prevenire lo standby ---
+# --- Moduli specifici per OS per prevenire lo standby (invariati) ---
 try:
     if platform.system() == "Windows":
         import ctypes
@@ -38,16 +41,17 @@ except ImportError as e: print(f"Errore import moduli specifici OS per standby: 
 except Exception as e: print(f"Errore generico import per standby: {e}")
 
 
-SUPPORTED_FILE_EXTENSIONS = (".flac")
+SUPPORTED_FILE_EXTENSIONS = (".flac",) # Usiamo una tupla
 CHECKPOINT_FILE = "transcription_checkpoint.json"
 BASE_OUTPUT_FOLDER_NAME = "transcription_output"
-PREPROCESSED_FOLDER_NAME = "audio_preprocessed" # Cartella per audio processato
+PREPROCESSED_FOLDER_NAME = "audio_preprocessed"
 
 # Global variable for checkpointing
 checkpoint_data = {}
 
 # --- Funzioni Gestione Standby (invariate) ---
 def prevent_sleep():
+    # ... (codice invariato) ...
     global caffeinate_process, inhibitor
     print(">>> Attivazione richiesta per prevenire lo standby del sistema...")
     system = platform.system()
@@ -60,7 +64,6 @@ def prevent_sleep():
             if caffeinate_process is None or caffeinate_process.poll() is not None:
                 caffeinate_process = subprocess.Popen(['caffeinate', '-i'])
                 print(f"Processo 'caffeinate -i' avviato (PID: {caffeinate_process.pid}).")
-            # else: print("Processo 'caffeinate' già attivo.") # Meno verboso
         elif system == "Linux":
             if 'pydbus' in sys.modules and inhibitor is None:
                  try:
@@ -69,12 +72,10 @@ def prevent_sleep():
                      cookie = mgr.Inhibit(app_id, reason); inhibitor = cookie
                      print(f"Richiesta anti-standby D-Bus inviata (Inhibitor: {inhibitor}).")
                  except Exception as e_dbus: print(f"!!! Errore D-Bus Inhibit: {e_dbus}"); inhibitor = None
-            # elif inhibitor is not None: print("Richiesta D-Bus anti-standby già attiva.") # Meno verboso
-            # else: print("Funzionalità anti-standby per Linux non attiva.") # Meno verboso
-        # else: print(f"OS '{system}' non supportato per gestione standby.") # Meno verboso
     except Exception as e: print(f"!!! Errore in prevent_sleep: {e}")
 
 def allow_sleep():
+    # ... (codice invariato) ...
     global caffeinate_process, inhibitor
     print(">>> Disattivazione richiesta anti-standby...")
     system = platform.system()
@@ -90,7 +91,6 @@ def allow_sleep():
                 try: caffeinate_process.wait(timeout=1)
                 except subprocess.TimeoutExpired: caffeinate_process.kill()
                 caffeinate_process = None; print("Processo 'caffeinate' terminato.")
-            # else: print("Nessun processo 'caffeinate' attivo.") # Meno verboso
         elif system == "Linux":
             if inhibitor is not None and 'pydbus' in sys.modules:
                 try:
@@ -99,15 +99,13 @@ def allow_sleep():
                     mgr.UnInhibit(inhibitor); inhibitor = None
                     print("Richiesta D-Bus rilasciata.")
                 except Exception as e_dbus: print(f"!!! Errore D-Bus UnInhibit: {e_dbus}")
-            # else: print("Nessuna richiesta D-Bus attiva.") # Meno verboso
-        # else: pass # Meno verboso
     except Exception as e: print(f"!!! Errore in allow_sleep: {e}")
 
-import atexit
-atexit.register(allow_sleep)
+atexit.register(allow_sleep) # Registra la funzione di cleanup
 
-# --- Gestione Segnali ---
+# --- Gestione Segnali (invariata) ---
 def signal_handler(sig, frame):
+    # ... (codice invariato) ...
     print("\n*** Interruzione rilevata! Pulizia e salvataggio... ***")
     allow_sleep()
     save_checkpoint()
@@ -117,19 +115,19 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-# --- Funzioni Checkpoint ---
+# --- Funzioni Checkpoint (invariate) ---
 def save_checkpoint():
+    # ... (codice invariato) ...
     global checkpoint_data
     if not checkpoint_data: return
     try:
-        # Aggiorna il timestamp del salvataggio
         checkpoint_data['last_saved'] = time.strftime("%Y-%m-%d %H:%M:%S")
         with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
             json.dump(checkpoint_data, f, ensure_ascii=False, indent=4)
-            # print(f"Checkpoint salvato.") # Log meno verboso
     except Exception as e: print(f"!!! Errore salvataggio checkpoint: {e}")
 
 def load_checkpoint():
+    # ... (codice invariato) ...
     global checkpoint_data
     if os.path.exists(CHECKPOINT_FILE):
         try:
@@ -143,145 +141,111 @@ def load_checkpoint():
         except Exception as e: print(f"Errore caricamento checkpoint: {e}."); checkpoint_data = {}; return False
     else: checkpoint_data = {}; return False
 
-# --- NUOVA FUNZIONE DI PREPROCESSING DI TUTTI I FILE ---
-def preprocess_all_audio(base_input_dir: str, preprocessed_output_dir: str) -> bool:
+# --- RIMOSSA FUNZIONE preprocess_all_audio (spostata nel modulo) ---
+
+# --- MODIFICATA Funzione transcribeFilesInDirectory ---
+# Ora itera sui file *originali*, controlla se il preprocessato esiste, e poi trascrive.
+def transcribeFilesInDirectory(original_base_dir: str,
+                               preprocessed_dir: str,
+                               model,
+                               model_choice: str,
+                               output_dir: str):
     """
-    Esegue il preprocessing (riduzione rumore, normalizzazione) su tutti i file
-    .flac nella directory di input e li salva nella directory di output.
-    Ritorna True se almeno un file è stato processato con successo, False altrimenti.
-    """
-    print(f"\n--- Avvio Preprocessing Audio da '{base_input_dir}' a '{preprocessed_output_dir}' ---")
-    if not os.path.isdir(base_input_dir):
-        print(f"Errore: Directory di input base non trovata: {base_input_dir}"); return False
-
-    try:
-        os.makedirs(preprocessed_output_dir, exist_ok=True)
-        print(f"Directory per audio preprocessato: {preprocessed_output_dir}")
-    except OSError as e:
-        print(f"Errore creazione directory preprocessato: {e}"); return False
-
-    files_to_process = [f for f in os.listdir(base_input_dir) if f.endswith(SUPPORTED_FILE_EXTENSIONS)]
-    if not files_to_process:
-        print("Nessun file .flac trovato nella directory di input."); return False
-
-    print(f"Trovati {len(files_to_process)} file .flac da processare.")
-    success_count = 0
-    failure_count = 0
-
-    for filename in sorted(files_to_process):
-        input_path = os.path.join(base_input_dir, filename)
-        output_path = os.path.join(preprocessed_output_dir, filename) # Salva con lo stesso nome
-
-        # Salta se il file preprocessato esiste già (permette ripresa parziale)
-        if os.path.exists(output_path):
-            print(f"Skipping {filename} (già preprocessato).")
-            success_count += 1 # Conta come successo se esiste già
-            continue
-
-        print(f"\nPreprocessing {filename}...")
-        try:
-            # Chiama la funzione di preprocessing da transcribeAudio
-            processed_ok = transcribe.preprocess_audio(input_path, output_path,
-                                                      noise_reduce=True, # Abilita/Disabilita qui
-                                                      normalize=True)    # Abilita/Disabilita qui
-            if processed_ok:
-                success_count += 1
-                print(f"Preprocessing di {filename} completato.")
-            else:
-                failure_count += 1
-                print(f"Preprocessing di {filename} fallito o saltato (nessun file di output generato). Si userà l'originale se necessario.")
-                # Opzionale: copiare l'originale se il preprocessing fallisce ma si vuole continuare?
-                # try: shutil.copy2(input_path, output_path); print("  Copiato file originale.")
-                # except Exception as e_copy: print(f"  Errore copia file originale: {e_copy}"); failure_count += 1
-
-        except Exception as e:
-            failure_count += 1
-            print(f"!!! Errore critico durante preprocessing di {filename}: {e}")
-            # Considera se fermare tutto o continuare con gli altri file
-
-    print(f"\n--- Preprocessing Audio Completato ---")
-    print(f"File processati/skippati con successo: {success_count}")
-    print(f"File falliti/saltati: {failure_count}")
-
-    # Ritorna True se almeno un file è stato processato o era già presente
-    return success_count > 0
-
-# --- Funzione transcribeFilesInDirectory (CON LOGICA DI SUCCESSO CORRETTA) ---
-def transcribeFilesInDirectory(preprocessed_dir: str, model, model_choice: str, output_dir: str):
-    """
-    Trascrive i file .flac dalla directory preprocessata, salvando l'output in output_dir.
+    Trascrive i file audio basandosi sulla lista di file originali.
+    Controlla l'esistenza del file preprocessato corrispondente prima di procedere.
     Usa il checkpoint globale basato sui nomi file originali.
     """
     global checkpoint_data
-    filesTranscribed_original_paths = []
+    filesTranscribed_original_paths = [] # Lista dei percorsi originali tentati (successo o fallimento)
     processed_in_this_session = 0
 
-    original_base_dir = checkpoint_data.get('base_input_directory', None)
-    if not original_base_dir:
+    if not checkpoint_data:
+        print("ERRORE: Dati checkpoint non inizializzati.")
+        return []
+    if 'base_input_directory' not in checkpoint_data:
          print("ERRORE: 'base_input_directory' non trovato nel checkpoint.")
-         return []
+         # Fallback: prova a usare original_base_dir passato come argomento se disponibile
+         if not original_base_dir or not os.path.isdir(original_base_dir):
+              print("ERRORE: Impossibile determinare la directory di input originale.")
+              return []
+         # Non ideale, ma permette di continuare se l'argomento è corretto
+         checkpoint_data['base_input_directory'] = original_base_dir
 
-    already_processed_originals = checkpoint_data.setdefault('files_processed', {}).get(model_choice, [])
+    # Modello specifico per cui recuperare i file già processati
+    already_processed_originals = checkpoint_data.setdefault('files_processed', {}).setdefault(model_choice, [])
 
     try:
-        if not os.path.isdir(preprocessed_dir):
-            print(f"Errore: Directory audio preprocessato non trovata: {preprocessed_dir}")
+        # Elenca i file *originali* supportati
+        original_files = sorted([
+            f for f in os.listdir(original_base_dir)
+            if os.path.isfile(os.path.join(original_base_dir, f)) and f.lower().endswith(SUPPORTED_FILE_EXTENSIONS)
+        ])
+
+        if not original_files:
+            print(f"Nessun file con estensioni supportate trovato in {original_base_dir}")
             return []
 
-        preprocessed_files = sorted([f for f in os.listdir(preprocessed_dir) if f.endswith(SUPPORTED_FILE_EXTENSIONS)])
-        print(f"Trovati {len(preprocessed_files)} file preprocessati in {preprocessed_dir}")
-        if not preprocessed_files: return []
+        print(f"Trovati {len(original_files)} file audio originali da considerare per la trascrizione.")
 
-        for file_index, filename in enumerate(preprocessed_files):
-            preprocessed_path = os.path.join(preprocessed_dir, filename)
-            original_path = os.path.join(original_base_dir, filename)
+        for file_index, original_filename in enumerate(original_files):
+            original_path = os.path.join(original_base_dir, original_filename)
+            preprocessed_path = os.path.join(preprocessed_dir, original_filename) # Percorso atteso preprocessato
 
+            # 1. Controlla se già processato secondo il checkpoint
             if original_path in already_processed_originals:
-                print(f"({file_index+1}/{len(preprocessed_files)}) Skipping {filename} (già processato per '{model_choice}')")
+                print(f"({file_index+1}/{len(original_files)}) Skipping {original_filename} (già processato per '{model_choice}' secondo checkpoint)")
                 filesTranscribed_original_paths.append(original_path)
                 continue
 
-            print(f"\n--- ({file_index+1}/{len(preprocessed_files)}) Trascrizione '{model_choice}' per: {filename} (da preprocessato) ---")
+            # 2. Controlla se il file preprocessato esiste
+            if not os.path.exists(preprocessed_path):
+                print(f"({file_index+1}/{len(original_files)}) Skipping {original_filename}: File preprocessato non trovato in '{preprocessed_dir}'. Preprocessing fallito o file non generato.")
+                # MARCA COME TENTATO NEL CHECKPOINT per non riprovare inutilmente
+                # Questo evita loop se il preprocessing fallisce consistentemente per un file.
+                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
+                filesTranscribed_original_paths.append(original_path) # Aggiungi alla lista locale
+                processed_in_this_session += 1 # Conta come tentativo (fallito prima della trascrizione)
+                save_checkpoint()
+                continue # Passa al prossimo file originale
 
-            # Chiama la trascrizione
+            # 3. Se non già processato e il file preprocessato esiste, procedi con la trascrizione
+            print(f"\n--- ({file_index+1}/{len(original_files)}) Trascrizione '{model_choice}' per: {original_filename} (da preprocessato: {os.path.basename(preprocessed_path)}) ---")
+
+            # Chiama la trascrizione usando il file preprocessato
+            # transcribeAudioFile ritorna il percorso del file .txt finale o del file di errore/log
             output_file_path = transcribe.transcribeAudioFile(preprocessed_path, model, model_choice, output_dir)
 
-            # --- LOGICA DI SUCCESSO/FALLIMENTO CORRETTA ---
+            # --- LOGICA DI SUCCESSO/FALLIMENTO (come prima, basata su output_file_path) ---
+            # Aggiungi l'original_path al checkpoint *indipendentemente* dal successo o fallimento
+            # della trascrizione, perché abbiamo *tentato* di processarlo.
+            checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
+            filesTranscribed_original_paths.append(original_path) # Aggiungi alla lista locale dei tentati
+            processed_in_this_session += 1
+
             if output_file_path and os.path.exists(output_file_path) and "FAILED" not in os.path.basename(output_file_path).upper():
-                # Successo: il file finale esiste e non è un file di errore esplicito
-                print(f"Trascrizione completata con successo per {filename}.")
-                filesTranscribed_original_paths.append(original_path) # Aggiungi alla lista locale
-                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path) # Aggiorna checkpoint
-                processed_in_this_session += 1
-                save_checkpoint() # Salva checkpoint
+                print(f"Trascrizione completata con successo per {original_filename}.")
+                # (Checkpoint già aggiornato sopra)
             elif output_file_path and os.path.exists(output_file_path):
-                # Fallimento Parziale: è stato creato un file, ma è un file di errore (es. FAILED nel nome)
-                print(f"ERRORE durante trascrizione di {filename}. Log/File errore: {os.path.basename(output_file_path)}")
-                # Marca come tentato nel checkpoint per non riprovare
-                filesTranscribed_original_paths.append(original_path)
-                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
-                processed_in_this_session += 1 # Conta come tentativo
-                save_checkpoint()
+                print(f"ERRORE o INFO durante trascrizione di {original_filename}. File di output: {os.path.basename(output_file_path)}")
+                # (Checkpoint già aggiornato sopra)
             else:
-                # Fallimento Grave: transcribeAudioFile ha restituito None o un percorso non valido
-                print(f"ERRORE grave: Trascrizione per {filename} non ha prodotto un file finale valido o ha restituito None.")
-                # Marca comunque come tentato per evitare loop
-                filesTranscribed_original_paths.append(original_path)
-                checkpoint_data['files_processed'].setdefault(model_choice, []).append(original_path)
-                processed_in_this_session += 1 # Conta come tentativo
-                save_checkpoint()
-            # --- FINE LOGICA CORRETTA ---
+                print(f"ERRORE grave: Trascrizione per {original_filename} non ha prodotto un file finale valido o ha restituito None.")
+                # (Checkpoint già aggiornato sopra)
+
+            save_checkpoint() # Salva checkpoint dopo ogni tentativo
 
     except Exception as e:
-        print(f"Errore in transcribeFilesInDirectory: {e}")
-        save_checkpoint()
+        print(f"Errore imprevisto in transcribeFilesInDirectory: {e}")
+        import traceback
+        traceback.print_exc() # Stampa traceback per debug
+        save_checkpoint() # Salva comunque lo stato attuale
+        # Ritorna quello che è stato processato finora
         return filesTranscribed_original_paths
 
-    print(f"\n--- Completata trascrizione per modello '{model_choice}' ---")
-    # Il conteggio ora riflette i tentativi (successo o fallimento loggato)
-    print(f"File tentati/skippati in totale per '{model_choice}': {len(filesTranscribed_original_paths)}")
+    print(f"\n--- Completata sessione di trascrizione per modello '{model_choice}' ---")
+    print(f"File originali considerati/tentati in totale per '{model_choice}': {len(filesTranscribed_original_paths)}")
     print(f"File tentati (successo o fallimento) in questa sessione per '{model_choice}': {processed_in_this_session}")
-    return filesTranscribed_original_paths # Ritorna la lista dei percorsi originali TENTATI
+    return filesTranscribed_original_paths
 
 
 # ============================================================================
@@ -293,12 +257,14 @@ if __name__ == "__main__":
     prevent_sleep() # Attiva anti-standby
 
     # --- Load Checkpoint or Initialize ---
-    checkpoint_found = load_checkpoint() # load_checkpoint ora ritorna True/False
+    checkpoint_found = load_checkpoint()
 
     if checkpoint_found:
-        print(f"Ripresa da checkpoint. Modello originale: '{checkpoint_data.get('original_model_choice', 'N/A')}'")
-        print(f"Modelli rimasti: {checkpoint_data.get('models_to_process', [])}")
-        print(f"Directory input originale: {checkpoint_data.get('base_input_directory', 'N/A')}")
+        # ... (Logica ripresa/nuova sessione invariata) ...
+        print(f"Ripresa da checkpoint. Directory input originale: {checkpoint_data.get('base_input_directory', 'N/A')}")
+        print(f"Modelli originariamente scelti: {checkpoint_data.get('original_model_choice', 'N/A')}") # Potrebbe essere la lista ora
+        print(f"Modelli rimasti da processare: {checkpoint_data.get('models_to_process', [])}")
+
         while True:
              resume = input("Vuoi riprendere la sessione precedente? (s/n): ").strip().lower()
              if resume in ['s', 'n']:
@@ -317,70 +283,169 @@ if __name__ == "__main__":
             except OSError as e:
                 print(f"ATTENZIONE: Impossibile rimuovere il file di checkpoint '{CHECKPOINT_FILE}': {e}")
                 print("Lo script continuerà come nuova sessione, ma il vecchio file potrebbe rimanere.")
-                checkpoint_data = {} # Resetta comunque i dati in memoria
+                checkpoint_data = {}
                 checkpoint_found = False
         else:
              print("Ripresa della sessione dal checkpoint.")
              # checkpoint_data è già popolato da load_checkpoint()
 
     # --- Get User Input if NO valid checkpoint exists or user chose NOT to resume ---
-    if not checkpoint_found: # Esegui solo se non abbiamo caricato e scelto 's'
+    if not checkpoint_found:
         print("\n--- Nuova Sessione ---")
+
+        # MODIFICATO: Selezione Modelli Flessibile
+        ALL_AVAILABLE_MODELS = [
+            "whisper-medium", "whisper-largev2", "whisper-largev3",
+            "hf_whisper-medium", "hf_whisper-largev2", "hf_whisper-largev3",
+            "whispy_italian"
+        ]
         while True:
-            print("\nModelli disponibili (specificare modello-dimensione):")
-            print("  whisper-medium        (Originale OpenAI)")
-            print("  whisper-largev2       (Originale OpenAI)")
-            print("  whisper-largev3       (Originale OpenAI)")
-            print("  hf_whisper-medium     (OpenAI via HF Ottimizzato)")
-            print("  hf_whisper-largev2    (OpenAI via HF Ottimizzato)")
-            print("  hf_whisper-largev3    (OpenAI via HF Ottimizzato)")
-            print("  whispy_italian        (Fine-tuned Italiano via HF)")
-            print("  entrambi              (Esegue whisper-medium poi hf_whisper-medium)")
-            original_model_choice_input = input("Scegli modello (es. 'whisper-largev2', 'entrambi'): ").strip().lower()
-            valid_choices = ["whisper-medium", "whisper-largev2", "whisper-largev3",
-                             "hf_whisper-medium", "hf_whisper-largev2", "hf_whisper-largev3",
-                             "whispy_italian", "entrambi"]
-            if original_model_choice_input in valid_choices: break
-            else: print("Scelta non valida.")
+            print("\nModelli di trascrizione disponibili:")
+            for i, model_name in enumerate(ALL_AVAILABLE_MODELS):
+                print(f"  {i+1}. {model_name}")
+            print("\nInserisci i numeri o i nomi dei modelli da eseguire, separati da virgola.")
+            print("Oppure scrivi 'tutti' per eseguirli tutti in sequenza.")
+            print("Esempio: '1, 3' oppure 'whisper-medium, hf_whisper-largev3' oppure 'tutti'")
+
+            model_input = input("Scegli modelli: ").strip()
+            selected_models = []
+            invalid_selection = False
+
+            if model_input.lower() == 'tutti':
+                selected_models = ALL_AVAILABLE_MODELS
+                print(f"Selezionati tutti i modelli: {', '.join(selected_models)}")
+                break # Esce dal while della selezione modelli
+
+            # Prova a processare la selezione (numeri o nomi)
+            parts = [p.strip() for p in model_input.split(',') if p.strip()]
+            if not parts:
+                print("Selezione vuota. Riprova.")
+                continue
+
+            for part in parts:
+                found = False
+                # Prova a matchare per numero
+                if part.isdigit():
+                    try:
+                        index = int(part) - 1
+                        if 0 <= index < len(ALL_AVAILABLE_MODELS):
+                            selected_model = ALL_AVAILABLE_MODELS[index]
+                            if selected_model not in selected_models: # Evita duplicati
+                                selected_models.append(selected_model)
+                            found = True
+                        else:
+                            print(f"Errore: Numero '{part}' non valido.")
+                            invalid_selection = True; break
+                    except ValueError: # Non dovrebbe succedere con isdigit ma per sicurezza
+                        pass
+                # Se non è un numero valido o non trovato, prova a matchare per nome
+                if not found:
+                    model_name_lower = part.lower()
+                    match_found = False
+                    for available_model in ALL_AVAILABLE_MODELS:
+                        if available_model.lower() == model_name_lower:
+                             if available_model not in selected_models:
+                                 selected_models.append(available_model)
+                             match_found = True
+                             break # Trovato match per nome
+                    if not match_found:
+                         print(f"Errore: Modello '{part}' non riconosciuto.")
+                         invalid_selection = True; break
+                    found = match_found # Aggiorna found se il nome è stato trovato
+
+                if invalid_selection: break # Esce dal loop for part
+
+            if not invalid_selection and selected_models:
+                print(f"Modelli selezionati da eseguire (in ordine): {', '.join(selected_models)}")
+                break # Esce dal while della selezione modelli
+            elif not selected_models and not invalid_selection:
+                 print("Nessun modello valido selezionato. Riprova.")
+            else: # C'è stato un errore
+                 print("Selezione non valida. Correggi e riprova.")
+                 # Loop while continua
+
+
+        # Chiedi directory input
         while True:
             base_input_directory = input('Inserisci directory audio originale: ').strip()
             if os.path.isdir(base_input_directory): break
             else: print(f"Errore: '{base_input_directory}' non è una directory valida.")
 
-        models_to_process_list = []
-        if original_model_choice_input == "entrambi":
-            models_to_process_list = ["whisper-medium", "hf_whisper-medium"]
-            print("Opzione 'entrambi' selezionata: verranno eseguiti 'whisper-medium' e 'hf_whisper-medium'.")
-        else:
-            models_to_process_list = [original_model_choice_input]
+        # Chiedi numero core per preprocessing
+        default_cores = 8
+        while True:
+            try:
+                core_input = input(f"Numero di core CPU per il preprocessing (default {default_cores}, premi Invio per default): ").strip()
+                if not core_input:
+                    num_cores_to_use = default_cores
+                    break
+                num_cores_to_use = int(core_input)
+                if num_cores_to_use > 0:
+                    break
+                else:
+                    print("Inserisci un numero intero positivo.")
+            except ValueError:
+                print("Inserisci un numero intero valido.")
 
         # Inizializza checkpoint_data per la nuova sessione
         checkpoint_data = {
             "base_input_directory": base_input_directory,
-            "original_model_choice": original_model_choice_input,
-            "models_to_process": models_to_process_list,
-            "files_processed": {},
+            "original_model_choice": model_input, # Salva l'input utente originale
+            "models_to_process": selected_models, # Lista dei modelli validati
+            "num_preprocessing_workers": num_cores_to_use, # Salva numero core scelto
+            "files_processed": {}, # Dizionario per tracciare file per modello
+            "preprocessing_output_paths": [], # Lista dei file preprocessati con successo
             "current_model_processing": None,
             "last_saved": None
         }
         print("Dati nuova sessione inizializzati.")
-        # Non salviamo il checkpoint qui, verrà salvato al primo file processato o interruzione
+        # Salviamo subito il checkpoint iniziale per non perdere la configurazione
+        save_checkpoint()
 
-    # --- Setup Directories ---
+    # --- Setup Directories (invariato) ---
     base_input_dir = checkpoint_data['base_input_directory']
     preprocessed_audio_dir = os.path.join(base_input_dir, PREPROCESSED_FOLDER_NAME)
     base_output_dir = os.path.join(base_input_dir, BASE_OUTPUT_FOLDER_NAME)
+    num_cores = checkpoint_data.get('num_preprocessing_workers', 8) # Recupera o usa default
 
-    # --- ESEGUI PREPROCESSING ---
-    if not preprocess_all_audio(base_input_dir, preprocessed_audio_dir):
-         print("\nErrore critico durante il preprocessing o nessun file trovato/processato.")
-         allow_sleep(); sys.exit(1)
+    # --- ESEGUI PREPROCESSING PARALLELO ---
+    # Controlla se il preprocessing è già stato completato (guardando la lista nel checkpoint)
+    # Questo evita di rieseguire il preprocessing se lo script viene riavviato dopo questa fase.
+    if not checkpoint_data.get('preprocessing_output_paths'):
+        print("\n--- Inizio Fase di Preprocessing ---")
+        # Chiama la nuova funzione parallela
+        success_count, failure_count, valid_output_paths = preprocessor.run_parallel_preprocessing(
+            base_input_dir,
+            preprocessed_audio_dir,
+            num_workers=num_cores,
+            supported_extensions=SUPPORTED_FILE_EXTENSIONS
+        )
 
-    # --- Main Processing Loop ---
+        # Salva i risultati del preprocessing nel checkpoint
+        checkpoint_data['preprocessing_output_paths'] = valid_output_paths
+        save_checkpoint()
+
+        # Controlla se almeno un file è stato processato con successo
+        if success_count == 0 and failure_count > 0 :
+             print("\nErrore critico: Nessun file audio è stato preprocessato con successo.")
+             allow_sleep(); sys.exit(1)
+        elif not valid_output_paths:
+             print("\nAttenzione: Nessun file audio trovato o processato durante il preprocessing.")
+             # Potrebbe non essere un errore se la cartella era vuota, quindi continuiamo
+             # ma la trascrizione probabilmente non farà nulla.
+    else:
+        print("\n--- Skipping Preprocessing ---")
+        print("Trovati risultati di preprocessing nel checkpoint.")
+        print(f"Numero di file preprocessati precedentemente: {len(checkpoint_data['preprocessing_output_paths'])}")
+
+
+    # --- Main Processing Loop (Trascrizione) ---
     models_to_process = checkpoint_data.get('models_to_process', [])
     if not models_to_process:
-         print("Nessun modello specificato per l'elaborazione nel checkpoint.")
-         if os.path.exists(CHECKPOINT_FILE): os.remove(CHECKPOINT_FILE) # Pulisci checkpoint vuoto
+         print("Nessun modello specificato per l'elaborazione nel checkpoint o selezione utente.")
+         if os.path.exists(CHECKPOINT_FILE):
+             try: os.remove(CHECKPOINT_FILE); print("Checkpoint vuoto rimosso.")
+             except OSError as e: print(f"Warn: Impossibile rimuovere checkpoint vuoto: {e}")
          allow_sleep(); sys.exit(0)
 
     try: os.makedirs(base_output_dir, exist_ok=True); print(f"\nDirectory output base: {base_output_dir}")
@@ -393,22 +458,23 @@ if __name__ == "__main__":
     processing_completed_normally = False
     try:
         while current_model_index < len(models_to_process):
-            # Usa il nome completo (con dimensione) come identificativo
             current_model_choice_full = models_to_process[current_model_index]
-            # Crea un nome cartella sicuro dall'identificativo completo
-            current_model_folder_name = current_model_choice_full.replace('/', '_') # Sostituisci / se presenti
+            current_model_folder_name = current_model_choice_full.replace('/', '_') # Sicuro per nomi cartella
 
-            print(f"\n{'='*20} Elaborazione Modello: {current_model_choice_full} {'='*20}")
+            print(f"\n{'='*20} Elaborazione Modello {current_model_index + 1}/{len(models_to_process)}: {current_model_choice_full} {'='*20}")
 
             checkpoint_data['current_model_processing'] = current_model_choice_full
-            save_checkpoint()
+            save_checkpoint() # Salva quale modello stiamo per iniziare
 
             model_output_dir = os.path.join(base_output_dir, current_model_folder_name)
-            try: os.makedirs(model_output_dir, exist_ok=True); print(f"Directory output: {model_output_dir}")
+            try: os.makedirs(model_output_dir, exist_ok=True); print(f"Directory output modello: {model_output_dir}")
             except OSError as e:
-                print(f"!!! Errore creazione dir output per {current_model_folder_name}: {e}. Salto.");
-                checkpoint_data['models_to_process'] = models_to_process[current_model_index + 1:]; save_checkpoint()
-                current_model_index += 1; continue
+                print(f"!!! Errore creazione dir output per {current_model_folder_name}: {e}. Salto modello.");
+                # Rimuovi modello dalla lista e salva checkpoint aggiornato
+                checkpoint_data['models_to_process'] = models_to_process[current_model_index + 1:]
+                checkpoint_data['current_model_processing'] = None
+                save_checkpoint()
+                current_model_index += 1; continue # Passa al prossimo modello
 
             MODEL = None
             try:
@@ -416,84 +482,106 @@ if __name__ == "__main__":
                 MODEL = transcribe.load_model(current_model_choice_full)
                 if MODEL is None: raise ValueError("load_model ha restituito None.")
 
-                print(f"\nAvvio trascrizione per '{current_model_choice_full}' (da audio preprocessato)...")
-                # Questa funzione ora ritorna la lista dei percorsi ORIGINALI processati/tentati
-                processed_original_paths = transcribeFilesInDirectory(
-                    preprocessed_audio_dir, MODEL, current_model_choice_full, model_output_dir
+                print(f"\nAvvio trascrizione per '{current_model_choice_full}'...")
+                # Chiama la funzione modificata passando la dir originale e quella preprocessata
+                processed_original_paths_tentativi = transcribeFilesInDirectory(
+                    base_input_dir, # Directory originale
+                    preprocessed_audio_dir, # Directory con audio preprocessato
+                    MODEL,
+                    current_model_choice_full,
+                    model_output_dir
                 )
 
-                # --- CONTROLLO SUCCESSO MODIFICATO ---
-                # Verifichiamo se almeno un file .txt finale è stato creato per questo modello
-                # (presuppone che transcribeAudioFile ritorni il percorso del file completato)
-                any_output_file_created = False
-                processed_files_for_model = checkpoint_data.get('files_processed', {}).get(current_model_choice_full, [])
-                if processed_files_for_model: # Se c'è almeno un file processato nel checkpoint
-                    # Ricostruiamo il percorso atteso per l'ultimo file processato
-                    last_original_path = processed_files_for_model[-1]
-                    last_filename = os.path.basename(last_original_path)
-                    expected_completed_file = os.path.join(model_output_dir, f"{os.path.splitext(last_filename)[0]}-TranscribedAudio.txt")
-                    # Questo controllo non è perfetto, ma dà un'idea se l'output esiste
-                    if os.path.exists(expected_completed_file):
-                         any_output_file_created = True
-                         print(f"Verifica successo: Trovato file finale per l'ultimo elemento processato ({os.path.basename(expected_completed_file)}). Assumo successo generale.")
-                    else:
-                         # Potrebbe essere un file di errore o fallimento nell'ultimo step
-                         print(f"Verifica successo: NON trovato file finale per l'ultimo elemento processato ({os.path.basename(expected_completed_file)}). Potrebbero esserci stati errori.")
+                # --- CONTROLLO SUCCESSO e COMBINAZIONE (Logica leggermente adattata) ---
+                # Controlliamo se ci sono stati tentativi (anche falliti) per questo modello
+                processed_files_for_model_in_ckpt = checkpoint_data.get('files_processed', {}).get(current_model_choice_full, [])
 
-                # Se è stato creato output (o se non c'erano file da processare), procedi con la combinazione
-                # Se non c'erano file audio preprocessati, processed_original_paths sarà vuoto ma non è un errore.
-                if any_output_file_created or not processed_original_paths: # Procede anche se non c'erano file da trascrivere
-                    if processed_files_for_model: # Combina solo se ci sono file processati
-                        print(f"\nCombinazione file per '{current_model_choice_full}'...")
-                        combineSpeakers.combineTranscribedSpeakerFiles(model_output_dir)
-                        print(f"Combinazione completata per '{current_model_choice_full}'.")
-                    else:
-                        print(f"Nessun file processato per '{current_model_choice_full}'. Salto combinazione.")
+                # Se non ci sono file nel checkpoint per questo modello, significa che
+                # o non c'erano file originali, o tutti i preprocessing sono falliti,
+                # o transcribeFilesInDirectory è fallita subito.
+                if not processed_files_for_model_in_ckpt:
+                     print(f"Nessun file risulta processato (o tentato) per '{current_model_choice_full}' secondo il checkpoint.")
+                     print("Possibili cause: nessun file .flac originale, fallimento totale del preprocessing, errore iniziale nella trascrizione.")
+                     # In questo caso, non c'è nulla da combinare.
                 else:
-                     # Se c'erano file da processare ma non è stato creato l'output finale atteso
-                     print(f"WARN: Nessun file finale .txt trovato per '{current_model_choice_full}', anche se il processing è stato tentato. Salto combinazione.")
+                    # Se ci sono file nel checkpoint, tentiamo la combinazione.
+                    # La funzione di combinazione è già robusta e gestirà l'assenza
+                    # di file .txt validi se le trascrizioni sono fallite.
+                    print(f"\nCombinazione file per '{current_model_choice_full}'...")
+                    combineSpeakers.combineTranscribedSpeakerFiles(model_output_dir)
+                    print(f"Combinazione (o tentativo) completata per '{current_model_choice_full}'.")
 
-                # --- Fine controllo successo ---
-
-                # --- Mark model as done ---
+                # --- Mark model as done nel checkpoint ---
+                # Rimuovi il modello corrente dalla lista 'models_to_process'
                 checkpoint_data['models_to_process'] = models_to_process[current_model_index + 1:]
-                checkpoint_data['current_model_processing'] = None; save_checkpoint()
-                current_model_index += 1
+                checkpoint_data['current_model_processing'] = None # Nessun modello attivo
+                save_checkpoint() # Salva lo stato aggiornato
+                current_model_index += 1 # Passa all'indice del prossimo modello
 
             except Exception as e_inner_loop:
-                 print(f"\n!!! Errore durante elaborazione modello '{current_model_choice_full}': {e_inner_loop}")
-                 save_checkpoint(); raise
+                 print(f"\n!!! Errore IRRECUPERABILE durante elaborazione modello '{current_model_choice_full}': {e_inner_loop}")
+                 print("Salvataggio checkpoint e interruzione dello script.")
+                 import traceback
+                 traceback.print_exc()
+                 save_checkpoint()
+                 # Non sollevare l'eccezione di nuovo per permettere il finally, ma esci
+                 processing_completed_normally = False
+                 break # Esce dal while dei modelli
 
             finally:
-                # ... (Cleanup GPU Memory invariato) ...
+                # Cleanup GPU Memory
                 if MODEL is not None:
-                     # ... (codice cleanup) ...
-                     pass # Inserisci qui il codice di cleanup GPU precedente
-                if torch.cuda.is_available(): torch.cuda.empty_cache(); # print("Cache CUDA svuotata.")
-                time.sleep(1) # Breve pausa
+                    print(f"Rilascio risorse modello '{current_model_choice_full}'...")
+                    # Per modelli HF (pipeline): può bastare del MODEL
+                    # Per modelli OpenAI: può bastare del MODEL
+                    # Forzare garbage collection potrebbe aiutare
+                    del MODEL
+                    MODEL = None
+                    import gc
+                    gc.collect() # Forza garbage collection
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        print("Cache CUDA svuotata.")
+                    print("Risorse modello rilasciate.")
+                time.sleep(2) # Pausa leggermente più lunga tra modelli
 
-        processing_completed_normally = True
+        # Se il loop while è terminato senza 'break' dovuto a errori irrecuperabili
+        if current_model_index == len(models_to_process):
+             processing_completed_normally = True
 
     except Exception as e_outer_loop:
-         print("\n!!! Ciclo di elaborazione principale interrotto a causa di un errore.")
+         print(f"\n!!! Errore IRRECUPERABILE nel ciclo di elaborazione principale: {e_outer_loop}")
+         import traceback
+         traceback.print_exc()
+         processing_completed_normally = False
+         # Il checkpoint dovrebbe essere stato salvato nel blocco finally o nell'handler segnali
 
     finally:
         # --- Final Cleanup ---
-        print("\n=== Fine Elaborazione ===")
-        allow_sleep() # Disattiva anti-standby
+        print("\n=== Fine Elaborazione Script ===")
+        allow_sleep() # Disattiva anti-standby SEMPRE
 
         if processing_completed_normally and os.path.exists(CHECKPOINT_FILE):
-            print("Elaborazione completata normalmente.")
-            # Opzionale: chiedere all'utente se rimuovere la cartella preprocessata
+            print("Elaborazione completata normalmente per tutti i modelli richiesti.")
+            # Qui potresti aggiungere la rimozione della cartella preprocessata, se desiderato.
             # remove_preprocessed = input(f"Rimuovere la cartella '{PREPROCESSED_FOLDER_NAME}'? (s/n): ").lower()
             # if remove_preprocessed == 's':
             #    try: shutil.rmtree(preprocessed_audio_dir); print("Cartella preprocessata rimossa.")
             #    except Exception as e_clean: print(f"Errore rimozione cartella preprocessata: {e_clean}")
-            try: os.remove(CHECKPOINT_FILE); print(f"File checkpoint {CHECKPOINT_FILE} rimosso.")
-            except OSError as e: print(f"Warn: Impossibile rimuovere checkpoint: {e}")
-        elif not processing_completed_normally: print("Elaborazione terminata con errori/interruzione. Checkpoint conservato.")
-        else: print("Elaborazione completata.")
+            try:
+                os.remove(CHECKPOINT_FILE)
+                print(f"File checkpoint '{CHECKPOINT_FILE}' rimosso.")
+            except OSError as e:
+                print(f"Warn: Impossibile rimuovere il file di checkpoint '{CHECKPOINT_FILE}': {e}")
+        elif not processing_completed_normally:
+            print("Elaborazione terminata con errori o interrotta prima del completamento.")
+            print(f"Il file di checkpoint '{CHECKPOINT_FILE}' è stato conservato per una possibile ripresa.")
+            print(f"Modelli rimasti (se presenti): {checkpoint_data.get('models_to_process', [])}")
+        else:
+            # Caso in cui processing_completed_normally è False ma il checkpoint non esiste più
+            # (potrebbe succedere se l'errore avviene proprio durante la rimozione del checkpoint?)
+            print("Elaborazione completata, ma lo stato finale è incerto (checkpoint non trovato).")
 
     print("\nScript terminato.")
 
-# --- END OF transcribeCraigAudio.py ---
+# --- END OF transcribeCraigAudio.py (MODIFICATO) ---
