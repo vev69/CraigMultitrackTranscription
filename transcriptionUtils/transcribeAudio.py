@@ -528,98 +528,66 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
     return final_path_to_return
 
 def _remove_repeated_token_sequences(text: str,
-                                     min_seq_len: int = 3, # Aumentiamo un po' la soglia minima? O teniamo 2? Proviamo 3.
-                                     min_consecutive_repeats: int = 2 # Rimuovi se si ripete almeno 2 volte (lascia 1)
+                                     min_seq_len: int = 2, # MINIMO 2 TOKEN
+                                     min_consecutive_repeats: int = 2
                                      ) -> str:
     """
-    Rimuove sequenze di token (parole e punteggiatura) che si ripetono
-    almeno `min_consecutive_repeats` volte consecutivamente.
-    Lascia solo la prima occorrenza della sequenza.
-    Ottimizzato per gestire lunghe ripetizioni (es. allucinazioni ASR).
-
-    Args:
-        text: La stringa di input.
-        min_seq_len: Lunghezza minima in token della sequenza da considerare.
-        min_consecutive_repeats: Numero minimo di occorrenze consecutive
-                                  per attivare la rimozione (>= 2).
-
-    Returns:
-        La stringa con le sequenze ripetute rimosse.
+    Rimuove sequenze di token (parole, punteggiatura, parentesi) che si ripetono
+    almeno `min_consecutive_repeats` volte consecutivamente. Versione 4.
     """
-    if not text or min_consecutive_repeats < 2:
+    if not text or min_consecutive_repeats < 2 or min_seq_len < 1:
         return text
 
-    # Tokenizza preservando parole e punteggiatura
-    tokens = re.findall(r"[\w']+|[.,!?;:]", text)
-    if len(tokens) < min_seq_len * min_consecutive_repeats:
-        return text # Non abbastanza token per il pattern minimo
+    # Tokenizer Migliorato (v4)
+    tokens = re.findall(r"\(.+?\)|\[.+?\]|[\w']+|[^\s]", text)
 
-    made_change_in_pass = True # Flag per continuare a ciclare finché si trovano ripetizioni
+    if len(tokens) < min_seq_len * min_consecutive_repeats:
+        return text
+
+    made_change_in_pass = True
     while made_change_in_pass:
         made_change_in_pass = False
         i = 0
-        new_tokens = [] # Costruiamo la lista pulita in ogni passata
+        new_tokens = []
 
         while i < len(tokens):
             found_long_repeat = False
-            # Itera sulle possibili lunghezze, dalla più lunga alla più corta
-            # La lunghezza massima possibile è limitata dalla posizione corrente 'i'
-            # e dal numero minimo di ripetizioni necessarie.
             max_possible_len = (len(tokens) - i) // min_consecutive_repeats
             if max_possible_len < min_seq_len:
-                 # Non c'è più spazio per trovare sequenze ripetute abbastanza lunghe
-                 # Aggiungi i token rimanenti e esci dal loop interno
                  new_tokens.extend(tokens[i:])
                  break
 
             for L in range(max_possible_len, min_seq_len - 1, -1):
-                # La sequenza base da cercare
                 sequence_to_match = tuple(tokens[i : i + L])
-                # Controlla quante volte si ripete consecutivamente
                 repeat_count = 1
-                k = i + L # Indice di inizio della potenziale prossima ripetizione
+                k = i + L
                 while k + L <= len(tokens):
                     if tuple(tokens[k : k + L]) == sequence_to_match:
                         repeat_count += 1
-                        k += L # Passa alla prossima potenziale ripetizione
+                        k += L
                     else:
-                        break # La sequenza non si ripete più
+                        break
 
-                # Se abbiamo trovato abbastanza ripetizioni consecutive
                 if repeat_count >= min_consecutive_repeats:
-                    # print(f"  DEBUG REPEAT v3: Found sequence {sequence_to_match} repeating {repeat_count} times starting at {i}")
-                    # Aggiungi solo la *prima* occorrenza a new_tokens
-                    new_tokens.extend(list(sequence_to_match))
-                    # Avanza l'indice 'i' per saltare *tutte* le occorrenze trovate
-                    i += repeat_count * L
+                    new_tokens.extend(list(sequence_to_match)) # Aggiungi prima occorrenza
+                    i += repeat_count * L # Salta tutte le occorrenze
                     found_long_repeat = True
-                    made_change_in_pass = True # Segnala che abbiamo modificato
-                    break # Esci dal loop delle lunghezze L, abbiamo gestito la ripetizione per questa 'i'
+                    made_change_in_pass = True
+                    break # Esci dal loop L
 
-            # Se NON abbiamo trovato una ripetizione di lunghezza >= min_seq_len
-            # che si ripete abbastanza volte partendo da 'i',
-            # aggiungi semplicemente il token corrente e vai al prossimo.
             if not found_long_repeat:
                 new_tokens.append(tokens[i])
                 i += 1
-
-        # Aggiorna la lista dei token per il prossimo ciclo while esterno
         tokens = new_tokens
-        # Se non sono state fatte modifiche in questa passata, esci dal loop esterno
-        # (Il flag made_change_in_pass verrà resettato a False all'inizio della prossima iterazione)
 
-    # --- Ricostruzione della stringa (logica invariata) ---
-    if not tokens:
-        return ""
-    result = tokens[0]
-    for j in range(1, len(tokens)):
-        prev_token = tokens[j-1]
-        current_token = tokens[j]
-        if current_token in ".,!?;:": result += current_token
-        elif re.match(r"[\w']+", current_token) and not prev_token.endswith("'"): result += " " + current_token
-        else: result += current_token
+    # Ricostruzione Stringa (Migliorata v4)
+    if not tokens: return ""
+    result = " ".join(tokens)
+    result = re.sub(r'\s+([.,!?;:])', r'\1', result)
+    result = re.sub(r'([(\[])\s+', r'\1', result)
+    result = re.sub(r'\s+([)\]])', r'\1', result)
+    result = re.sub(r"(\w)\s+'\s*(\w)", r"\1'\2", result)
     return result.strip()
-
 
 # --- Funzione post_process_transcription AGGIORNATA ---
 def post_process_transcription(input_file, output_file):
