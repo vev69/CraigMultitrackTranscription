@@ -265,7 +265,7 @@ def load_model(model_choice_with_size: str):
             config = GenerationConfig(
                 bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
                 decoder_start_token_id=decoder_start_token_id, forced_decoder_ids=forced_decoder_ids,
-                return_timestamps=True, no_timestamps_token_id=eos_token_id, max_length=448, num_beams=1
+                return_timestamps=True, no_timestamps_token_id=eos_token_id, max_length=448, num_beams=3
             )
             model.generation_config = config; print("GenerationConfig assegnata.")
         except Exception as e: print(f"Errore creazione GenerationConfig: {e}"); raise
@@ -374,9 +374,9 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
         try:
             print(f"Transcribing {audio_basename} with {model_choice} (HF Pipeline)...")
             # ... (chiamata al modello HF, gestione OOM come prima) ...
-            print(f"  Using batch_size={BATCH_SIZE_HF}, temperature=0.0, num_beams=1")
+            print(f"  Using batch_size={BATCH_SIZE_HF}, temperature=0.0, num_beams=3")
             result = model( input_path, return_timestamps=True, chunk_length_s=30,
-                            batch_size=BATCH_SIZE_HF, generate_kwargs={ "temperature": 0.0, "num_beams": 1, } )
+                            batch_size=BATCH_SIZE_HF, generate_kwargs={ "temperature": 0.0, "num_beams": 3, } )
 
         except torch.cuda.OutOfMemoryError:
              oom_msg = f"[ERROR] CUDA OutOfMemoryError batch_size={BATCH_SIZE_HF}. Riduci BATCH_SIZE_HF.\n"
