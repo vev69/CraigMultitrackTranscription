@@ -31,7 +31,7 @@ except ImportError:
     PYDUB_AVAILABLE = False
 # -----------------------------
 
-BATCH_SIZE_HF = 24
+BATCH_SIZE_HF = 16
 
 try:
     from optimum.bettertransformer import BetterTransformer
