@@ -5,6 +5,7 @@ import time
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
 import transcriptionUtils.transcribeAudio as transcribe
+import transcriptionUtils.splitAudio as splitter
 
 # --- Funzione Worker _preprocess_worker (INVARIATA NELLA LOGICA INTERNA) ---
 def _preprocess_worker(input_path: str, output_path: str) -> tuple[str | None, bool]:
