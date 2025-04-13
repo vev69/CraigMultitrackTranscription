@@ -643,16 +643,14 @@ def post_process_transcription(input_file, output_file):
             if end_f <= start_f: line_errors += 1; adjustment_log += f"|FinalEnd<=Start"; continue
 
 
-            # --- PULIZIA TESTO CON NUOVA FUNZIONE v3 ---
+            # --- PULIZIA TESTO CON NUOVA FUNZIONE v4 ---
             text_part_stripped = text_part_raw.strip()
-            if not text_part_stripped: continue # Salta se testo originale è vuoto
+            if not text_part_stripped: continue
 
-            # Chiama la nuova funzione v3
-            # min_seq_len=3: cerca ripetizioni di almeno 3 token (es. "è il cibo", non solo "un po'")
-            # min_consecutive_repeats=2: rimuovi se si ripete 2 o più volte (lascia la prima)
+            # Chiama la funzione v4 con min_seq_len=2
             cleaned_text = _remove_repeated_token_sequences(
                 text_part_stripped,
-                min_seq_len=3,
+                min_seq_len=2, # <-- DEVE ESSERE 2 PER CATTURARE "Ok." etc.
                 min_consecutive_repeats=2
             )
 
