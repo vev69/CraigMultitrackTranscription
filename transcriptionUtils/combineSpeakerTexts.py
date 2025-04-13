@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import os
 import re
 import json # Necessario per caricare il manifest
+import functools
 
 SUPPORTED_FILE_EXTENSIONS = (".txt")
 # Manifest globale caricato una sola volta
@@ -230,42 +231,90 @@ def __preprocessFiles__(transcription_output_dir: str, files: list[str]) -> dict
 
     return allFilesBySpeaker
 
+# --- NUOVA Funzione di Confronto per l'Ordinamento ---
+def _compare_transcribed_lines(lineA: TranscibedLineWithSpeaker, lineB: TranscibedLineWithSpeaker) -> int:
+    """
+    Funzione di confronto personalizzata per ordinare le linee trascritte.
+    Priorità all'inizio, ma con aggiustamenti per sovrapposizioni significative.
 
-# --- Funzione __combineSpeakers__ MODIFICATA (leggermente, usa nuovi campi dataclass) ---
+    Ritorna:
+        -1 se A < B (A viene prima)
+         0 se A == B (ordine indifferente)
+         1 se A > B (B viene prima)
+    """
+    # Tolleranza per considerare i timestamp quasi uguali
+    tolerance = 0.05 # 50 ms
+
+    # 1. Caso Base: Ordinamento per inizio timestamp
+    if abs(lineA.timeStampStart - lineB.timeStampStart) > tolerance:
+        if lineA.timeStampStart < lineB.timeStampStart:
+            return -1 # A inizia prima
+        else:
+            return 1 # B inizia prima
+
+    # 2. Se gli inizi sono (quasi) uguali, considera la fine
+    # Chi finisce prima viene messo prima (per evitare sovrapposizioni strane)
+    if abs(lineA.timeStampEnd - lineB.timeStampEnd) > tolerance:
+         if lineA.timeStampEnd < lineB.timeStampEnd:
+              return -1 # A finisce prima
+         else:
+              return 1 # B finisce prima
+
+    # 3. Se anche le fini sono (quasi) uguali, l'ordine è indifferente
+    #    ma possiamo usare lo speaker o il nome del chunk sorgente come
+    #    tie-breaker deterministico (anche se non semanticamente significativo)
+    if lineA.speaker != lineB.speaker:
+         return -1 if lineA.speaker < lineB.speaker else 1
+    if lineA.sourceChunkFile != lineB.sourceChunkFile:
+         return -1 if lineA.sourceChunkFile < lineB.sourceChunkFile else 1
+
+    return 0 # Considerati equivalenti per l'ordinamento
+
+# --- Funzione __combineSpeakers__ MODIFICATA per usare cmp_to_key ---
 def __combineSpeakers__(speakerLines: dict[str, list[TranscribedLine]]) -> list[TranscibedLineWithSpeaker]:
     if not speakerLines: print("Nessun dato speaker valido da combinare."); return []
     allLinesWithSpeaker = []
     print("\nCombining speaker lines...")
+    # ... (Codice per creare allLinesWithSpeaker invariato) ...
     for speaker, lines in speakerLines.items():
         for line in lines:
-            # Controllo validità timestamp (ora assoluti)
             if not isinstance(line.timeStampStart, (int, float)) or \
                not isinstance(line.timeStampEnd, (int, float)) or \
                line.timeStampStart < 0 or line.timeStampEnd < line.timeStampStart:
                  print(f"    DEBUG - Skipping invalid line for speaker '{speaker}': AbsStart={line.timeStampStart}, AbsEnd={line.timeStampEnd}, Chunk={line.sourceChunkFile}")
                  continue
-            # Crea l'oggetto TranscibedLineWithSpeaker
             allLinesWithSpeaker.append(TranscibedLineWithSpeaker(
                 speaker=speaker,
-                timeStampStart=line.timeStampStart, # Assoluto
-                timeStampEnd=line.timeStampEnd,     # Assoluto
+                timeStampStart=line.timeStampStart,
+                timeStampEnd=line.timeStampEnd,
                 lineText=line.lineText,
-                sourceChunkFile=line.sourceChunkFile, # Aggiunto
-                sourceOriginalFile=line.sourceOriginalFile # Aggiunto
+                sourceChunkFile=line.sourceChunkFile,
+                sourceOriginalFile=line.sourceOriginalFile
             ))
+
     initial_count = len(allLinesWithSpeaker)
-    print(f"Total lines read before global sorting: {initial_count}")
+    print(f"Total lines read before custom sorting: {initial_count}")
     if not allLinesWithSpeaker: return []
 
-    # ORDINAMENTO GLOBALE SUI TIMESTAMP ASSOLUTI
+    # ORDINAMENTO GLOBALE CON FUNZIONE DI CONFRONTO PERSONALIZZATA
     try:
-        allLinesWithSpeaker.sort(key=lambda x: x.timeStampStart)
-        print(f"Global sorting by absolute timestamp complete. Final line count: {len(allLinesWithSpeaker)}")
+        # Usa functools.cmp_to_key per passare la funzione di confronto a sort()
+        allLinesWithSpeaker.sort(key=functools.cmp_to_key(_compare_transcribed_lines))
+        print(f"Custom sorting complete. Final line count: {len(allLinesWithSpeaker)}")
     except Exception as e_sort:
-        print(f"!!! ERRORE DURANTE L'ORDINAMENTO GLOBALE: {e_sort}"); return []
+        print(f"!!! ERRORE DURANTE L'ORDINAMENTO PERSONALIZZATO: {e_sort}");
+        import traceback; traceback.print_exc();
+        # Fallback a ordinamento semplice per start time in caso di errore?
+        try:
+             print("Tentativo di fallback all'ordinamento per timestamp di inizio...")
+             allLinesWithSpeaker.sort(key=lambda x: x.timeStampStart)
+        except Exception as e_fallback_sort:
+             print(f"!!! Fallito anche l'ordinamento di fallback: {e_fallback_sort}")
+             return [] # Ritorna lista vuota se tutto fallisce
+        # return [] # Oppure ritorna vuota se l'ordinamento custom fallisce
 
-    # DEBUG (mostra timestamp assoluti)
-    print("\nDEBUG - First 10 globally sorted lines (absolute timestamps):")
+    # DEBUG (Invariato)
+    print("\nDEBUG - First 10 sorted lines (custom logic):")
     for i, line in enumerate(allLinesWithSpeaker[:10]):
         print(f"  {i+1}: [{line.timeStampStart:.2f}-{line.timeStampEnd:.2f}] {line.speaker}: {line.lineText[:50]}... (Chunk: {os.path.basename(line.sourceChunkFile or '')})")
 
