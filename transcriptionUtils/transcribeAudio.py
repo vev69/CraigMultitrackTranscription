@@ -482,27 +482,49 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
         print(f"  Skipping PP: {os.path.basename(inProgressFileName)} not found initially.")
         # final_return_path rimane None                  
 
-    # --- Verifica Finale (semplificata, si basa su final_return_path impostato sopra) ---
+    # --- Verifica Finale (SEMPLIFICATA E CORRETTA) ---
     final_check_msg = ""
+    # Lavoriamo direttamente su final_return_path
     if final_return_path and os.path.exists(final_return_path):
-        if os.path.getsize(final_return_path) == 0: final_check_msg = f"CHECK Final: Path '{os.path.basename(final_return_path)}' exists but is EMPTY."
-        else: final_check_msg = f"CHECK Final: Path '{os.path.basename(final_return_path)}' exists and is valid."
-    elif final_return_path and not os.path.exists(final_return_path): # Dovrebbe essere stato gestito sopra, ma per sicurezza
-         final_check_msg = f"CHECK Final ERROR: Path '{os.path.basename(final_return_path)}' was set but file NOT FOUND."
-         final_return_path = None
-    else: # final_return_path è None
-         final_check_msg = f"CHECK Final: No valid output path generated for {audio_basename}."
-         # ... (tentativo creazione file FAILED.txt come prima) ...
-         if not os.path.exists(completedFileName) and not os.path.exists(inProgressFileName) and not os.path.exists(errorLogFileName):
+        if os.path.getsize(final_return_path) == 0:
+            final_check_msg = f"CHECK Final: Path '{os.path.basename(final_return_path)}' exists but is EMPTY."
+            # Potremmo decidere di restituire None se è vuoto? Per ora no.
+        else:
+            final_check_msg = f"CHECK Final: Path '{os.path.basename(final_return_path)}' exists and is valid."
+            # Il path è valido, non fare nulla a final_return_path
+    elif final_return_path and not os.path.exists(final_return_path):
+         # Se il path era stato impostato ma ORA non esiste (molto strano)
+         final_check_msg = f"CHECK Final ERROR: Path '{os.path.basename(final_return_path)}' was set but file NOT FOUND at final check."
+         final_return_path = None # Reimposta a None perché non è valido
+    else: # final_return_path era già None o non esisteva
+         if final_return_path is None:
+             final_check_msg = f"CHECK Final: No valid output path was generated for {audio_basename} during transcription/PP."
+         else: # Path impostato ma non esiste (coperto sopra, ma per sicurezza)
+             final_check_msg = f"CHECK Final ERROR: Path '{os.path.basename(final_return_path)}' invalid."
+             final_return_path = None
+
+         # Tenta creazione file FAILED solo se final_return_path è effettivamente None
+         if final_return_path is None and \
+            not os.path.exists(completedFileName) and \
+            not os.path.exists(inProgressFileName.replace(".failed_pp","")) and \
+            not os.path.exists(errorLogFileName):
              try:
-                 # ... (crea errorLogFileName) ...
-                 final_return_path = errorLogFileName
-             except Exception as e_final_log: #...
-               print(f"  {final_check_msg}")
-               end_time_transcription = time.time()
-               elapsed = end_time_transcription - start_time_transcription
-               print(f"  --> transcribeAudioFile finished for {audio_basename} in {elapsed:.2f}s. Returning: {os.path.basename(final_return_path) if final_return_path else 'None'}")
-               return final_return_path
+                 with open(errorLogFileName, 'w', encoding='utf-8') as f_err:
+                     f_err.write(f"[ERROR] Transcription process failed to produce a valid output file for {audio_basename}.\n")
+                     f_err.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                 print(f"  Created final error log: {os.path.basename(errorLogFileName)}")
+                 final_return_path = errorLogFileName # Restituisci il log di errore creato
+             except Exception as e_final_log:
+                 print(f"  !!! Errore creando il file di log finale: {e_final_log}")
+                 final_return_path = None # Fallback a None se anche log fallisce
+    print(f"  {final_check_msg}")
+    end_time_transcription = time.time()
+    elapsed = end_time_transcription - start_time_transcription
+    # --- LOG FINALE PRIMA DEL RETURN ---
+    returning_value = os.path.basename(final_return_path) if final_return_path else 'None'
+    print(f"  --> transcribeAudioFile finished for {audio_basename} in {elapsed:.2f}s. Returning: {returning_value}")
+    # --- FINE LOG FINALE ---
+    return final_return_path
 
 def _remove_repeated_token_sequences(text: str,
                                      min_seq_len: int = 2, # MINIMO 2 TOKEN
