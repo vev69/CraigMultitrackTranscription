@@ -446,14 +446,14 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
                  # --- VERIFICA ESISTENZA DOPO PP ---
                  time.sleep(0.2) # Aumentato delay post PP call
                  if os.path.exists(completedFileName):
-                      print(f"  CHECK after PP call: {os.path.basename(completedFileName)} FOUND.")
+                      #print(f"  CHECK after PP call: {os.path.basename(completedFileName)} FOUND.")
                       final_return_path = completedFileName
                       # Tenta rimozione InProgress solo se PP sembra ok
                       time.sleep(0.1)
                       try: os.remove(inProgressFileName)
                       except OSError as e_rm: print(f"  Warn: Could not remove intermediate {os.path.basename(inProgressFileName)} after PP: {e_rm}")
-                 else:
-                      print(f"  ERROR after PP call: {os.path.basename(completedFileName)} NOT FOUND.")
+                 #else:
+                      #print(f"  ERROR after PP call: {os.path.basename(completedFileName)} NOT FOUND.")
                       # final_return_path rimane None
 
             except Exception as e_pp:
@@ -517,7 +517,7 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
              except Exception as e_final_log:
                  print(f"  !!! Errore creando il file di log finale: {e_final_log}")
                  final_return_path = None # Fallback a None se anche log fallisce
-    print(f"  {final_check_msg}")
+    #print(f"  {final_check_msg}")
     end_time_transcription = time.time()
     elapsed = end_time_transcription - start_time_transcription
     # --- LOG FINALE PRIMA DEL RETURN ---
@@ -659,7 +659,7 @@ def post_process_transcription(input_file, output_file):
             text_changed = cleaned_text.replace(" ", "") != text_part_stripped.replace(" ", "")
             if text_changed:
                 lines_cleaned_count += 1
-                print(f"  DEBUG PP (L{line_num+1}) TEXT CHANGED!") # Log esplicito se cambia
+            #    print(f"  DEBUG PP (L{line_num+1}) TEXT CHANGED!") # Log esplicito se cambia
 
             processed_line = f'[{start_f:.2f}, {end_f:.2f}] {cleaned_text}\n'
             sanitized_lines.append(processed_line)
@@ -690,31 +690,31 @@ def post_process_transcription(input_file, output_file):
 
     write_successful = False
     try:
-        print(f"  PP WRITE: Attempting to write {num_final_lines} lines to {os.path.basename(output_file)}...")
+        #print(f"  PP WRITE: Attempting to write {num_final_lines} lines to {os.path.basename(output_file)}...")
         with open(output_file, 'w', encoding='utf-8') as f:
             f.writelines(final_lines)
-        print(f"  PP WRITE: writelines() completed.")
+        #print(f"  PP WRITE: writelines() completed.")
         # Verifica IMMEDIATAMENTE dopo la scrittura
         time.sleep(0.2) # Aumenta leggermente il delay post-scrittura
         if os.path.exists(output_file):
-             print(f"  PP WRITE CHECK: File '{os.path.basename(output_file)}' EXISTS immediately after write.")
+        #     print(f"  PP WRITE CHECK: File '{os.path.basename(output_file)}' EXISTS immediately after write.")
              if os.path.getsize(output_file) > 0 or num_final_lines == 0: # OK se vuoto E doveva essere vuoto
-                 print(f"  PP WRITE CHECK: File size is > 0 (or expected empty). Write seems successful.")
+        #         print(f"  PP WRITE CHECK: File size is > 0 (or expected empty). Write seems successful.")
                  write_successful = True
-             else:
-                 print(f"  PP WRITE CHECK ERROR: File exists BUT IS EMPTY (and {num_final_lines} lines were expected).")
-        else:
-             print(f"  PP WRITE CHECK ERROR: File '{os.path.basename(output_file)}' DOES NOT EXIST immediately after write attempt.")
+        #     else:
+        #         print(f"  PP WRITE CHECK ERROR: File exists BUT IS EMPTY (and {num_final_lines} lines were expected).")
+        #else:
+        #     print(f"  PP WRITE CHECK ERROR: File '{os.path.basename(output_file)}' DOES NOT EXIST immediately after write attempt.")
 
     except Exception as e_write:
-         print(f"  PP WRITE FAILED with exception: {e_write}")
+         #print(f"  PP WRITE FAILED with exception: {e_write}")
          # Stampa traceback completo dell'errore di scrittura
          traceback.print_exc()
 
     # Stampa messaggio finale basato sul successo della scrittura
-    if write_successful:
-         print(f"  PP Finished Successfully for: {os.path.basename(output_file)}")
-    else:
-         print(f"  PP Finished WITH ERRORS writing: {os.path.basename(output_file)}")
+    #if write_successful:
+    #     print(f"  PP Finished Successfully for: {os.path.basename(output_file)}")
+    #else:
+    #     print(f"  PP Finished WITH ERRORS writing: {os.path.basename(output_file)}")
 
 # --- END OF transcriptionUtils/transcribeAudio.py ---
