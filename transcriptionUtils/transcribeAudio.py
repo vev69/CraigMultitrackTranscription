@@ -437,99 +437,95 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
                     post_processing_skipped_due_to_marker = True
         except Exception as e_check:
              print(f"  Warn: Errore leggendo {inProgressFileName} per controllo marker: {e_check}")
-             # Non skippare se non possiamo controllare
 
         # Esegui PP solo se non skippato
         if not post_processing_skipped_due_to_marker:
             print(f"  Starting post-processing / Timestamp Sanitization...")
             try:
-                 # Chiama la funzione di post-processing
-                 # Assicurati che post_process_transcription chiuda i file che apre
-                 post_process_transcription(inProgressFileName, completedFileName)
+                 post_process_transcription(inProgressFileName, completedFileName) # Chiama PP
                  post_processing_executed = True
-                 print(f"  Post-processing finished. Output: {os.path.basename(completedFileName)}")
-                 # Se il PP ha successo e crea il file completato, impostiamo il percorso finale
+                 print(f"  Post-processing finished. Output expected: {os.path.basename(completedFileName)}") # Log modificato
+
+                 # --- INIZIO BLOCCO CONTROLLO FILE POST-PP ---
+                 # Attendiamo un istante prima di controllare l'esistenza del file
+                 time.sleep(0.1) # Breve pausa per il filesystem
                  if os.path.exists(completedFileName):
                       final_return_path = completedFileName
-                      # Rimuovi il file InProgress solo se il PP è andato a buon fine
-                      # Aggiungi un piccolo delay prima di rimuovere, può aiutare su Windows
-                      time.sleep(0.1)
+                      # Rimuovi InProgress solo se PP ha successo e output esiste
+                      time.sleep(0.1) # Altro piccolo delay
                       try:
                            os.remove(inProgressFileName)
-                           # print(f"  Removed intermediate: {os.path.basename(inProgressFileName)}") # Meno verboso
                       except OSError as e_rm:
                            print(f"  Warn: Could not remove intermediate {os.path.basename(inProgressFileName)} after PP: {e_rm}")
                  else:
-                      print(f"  Warn: Post-processing ran but did not create {os.path.basename(completedFileName)}.")
+                      # Questo è il caso del log "Warn: Post-processing ran but did not create..."
+                      print(f"  ERROR after PP: {os.path.basename(completedFileName)} not found after waiting!")
                       final_return_path = None # Fallimento PP
+                 # --- FINE BLOCCO CONTROLLO FILE POST-PP ---
 
             except Exception as e_pp:
                  print(f"!!! Error during post-processing execution: {e_pp}")
                  traceback.print_exc()
                  final_return_path = None # Fallimento PP
-                 # Prova a preservare InProgress se fallisce il PP
+                 # ... (tentativo rename a .failed_pp come prima) ...
                  try:
                      failed_pp_name = completedFileName + ".failed_pp"
-                     if not os.path.exists(failed_pp_name):
-                          # Rinomina invece di copiare per evitare lock
+                     if os.path.exists(inProgressFileName) and not os.path.exists(failed_pp_name):
                           os.rename(inProgressFileName, failed_pp_name)
                           print(f"  Preserved intermediate as {os.path.basename(failed_pp_name)}")
                  except OSError as e_mv_fail:
                       print(f"  Could not preserve intermediate after PP error: {e_mv_fail}")
 
+
         # Se il PP è stato skippato a causa di un marker
         elif post_processing_skipped_due_to_marker:
-             # Dobbiamo rinominare InProgress in Completed (.txt)
-             # Questo è il punto dove avveniva il lock prima.
              print(f"  Renaming {os.path.basename(inProgressFileName)} to {os.path.basename(completedFileName)} (due to skipped PP)...")
-             time.sleep(0.2) # Aggiungi un delay più lungo prima di rinominare
+             time.sleep(0.2) # Delay più lungo
              try:
-                 # Assicurati che il target non esista
-                 if os.path.exists(completedFileName):
-                      os.remove(completedFileName)
-                 # Esegui la rinomina
+                 if os.path.exists(completedFileName): os.remove(completedFileName)
                  os.rename(inProgressFileName, completedFileName)
                  print(f"  Info/Error file saved: {os.path.basename(completedFileName)}")
-                 final_return_path = completedFileName # Il percorso finale è il file rinominato
+                 final_return_path = completedFileName
              except OSError as e_mv:
                   print(f"!!! ERROR renaming info/error file {os.path.basename(inProgressFileName)}: {e_mv}")
-                  print("      Possibile causa: File ancora bloccato. Trascrizione fallita per questo chunk.")
-                  final_return_path = None # Fallimento se non possiamo rinominare
+                  final_return_path = None
              except Exception as e_mv_generic:
                    print(f"!!! UNEXPECTED ERROR renaming info/error file: {e_mv_generic}")
-                   final_return_path = None # Fallimento
+                   final_return_path = None
 
-
-    else: # Se inProgressFileName non esiste (fallimento molto precoce)
-        print(f"  Skipping PP: {os.path.basename(inProgressFileName)} not found.")
+    else: # Se inProgressFileName non esisteva all'inizio
+        print(f"  Skipping PP: {os.path.basename(inProgressFileName)} not found initially.")
         final_return_path = None
 
-    # --- Verifica Finale ---
-    if final_return_path and not os.path.exists(final_return_path):
-         print(f"  WARN Final Check: Il percorso finale '{final_return_path}' non esiste. Restituisco None.")
-         final_return_path = None
-    elif final_return_path and os.path.exists(final_return_path) and os.path.getsize(final_return_path) == 0:
-         # Se il file finale esiste ma è vuoto (potrebbe succedere se PP rimuove tutto)
-         print(f"  INFO Final Check: Il file finale '{os.path.basename(final_return_path)}' è vuoto.")
-         # Restituiamo comunque il percorso, la logica a monte deciderà
-    elif not final_return_path:
-         print(f"  INFO Final Check: Nessun percorso finale valido generato per {audio_basename}.")
-         # Prova a creare un file FAILED come ultima risorsa se non esiste già un output
-         if not os.path.exists(completedFileName) and not os.path.exists(inProgressFileName):
+    # --- Verifica Finale (con log migliorato) ---
+    final_check_msg = ""
+    final_path_to_return = final_return_path # Copia temporanea
+    if final_path_to_return and os.path.exists(final_path_to_return):
+        if os.path.getsize(final_path_to_return) == 0:
+            final_check_msg = f"INFO Final Check: File finale '{os.path.basename(final_path_to_return)}' esiste ma è VUOTO."
+        else:
+            final_check_msg = f"INFO Final Check: File finale '{os.path.basename(final_path_to_return)}' valido trovato."
+    elif final_path_to_return and not os.path.exists(final_path_to_return):
+         final_check_msg = f"ERROR Final Check: Percorso finale '{os.path.basename(final_path_to_return)}' indicato ma NON ESISTE."
+         final_path_to_return = None # Assicura che sia None
+    else: # final_path_to_return era già None
+         final_check_msg = f"INFO Final Check: Nessun percorso finale valido generato per {audio_basename}."
+         # Tenta creazione file FAILED
+         if not os.path.exists(completedFileName) and not os.path.exists(inProgressFileName) and not os.path.exists(errorLogFileName):
              try:
                  with open(errorLogFileName, 'w', encoding='utf-8') as f_err:
                      f_err.write(f"[ERROR] Transcription process failed to produce a valid output file for {audio_basename}.\n")
                      f_err.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                  print(f"  Created final error log: {os.path.basename(errorLogFileName)}")
-                 final_return_path = errorLogFileName # Restituisci il log di errore
+                 final_path_to_return = errorLogFileName # Restituisci il log di errore
              except Exception as e_final_log:
                  print(f"  !!! Errore creando il file di log finale: {e_final_log}")
 
-
+    print(f"  {final_check_msg}")
     end_time_transcription = time.time()
     elapsed = end_time_transcription - start_time_transcription
-    print(f"  Transcription/PP process for {audio_basename} finished in {elapsed:.2f}s. Final path: {os.path.basename(final_return_path) if final_return_path else 'None'}")
-    return final_return_path # Restituisce il percorso del file .txt, .failed_pp, o del log di errore, o None
+    print(f"  Transcription/PP process for {audio_basename} finished in {elapsed:.2f}s. Returning path: {os.path.basename(final_path_to_return) if final_path_to_return else 'None'}")
+    return final_path_to_return
 
 def _remove_repeated_token_sequences(text: str,
                                      min_seq_len: int = 3, # Aumentiamo un po' la soglia minima? O teniamo 2? Proviamo 3.
