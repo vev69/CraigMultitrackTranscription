@@ -26,6 +26,7 @@ class TranscibedLineWithSpeaker: # Manteniamo il typo per coerenza interna
     sourceChunkFile: str | None = field(default=None) # Assoluto
     sourceOriginalFile: str | None = field(default=None) # Assoluto
 
+split_manifest_data = None
 
 # --- Funzione __readFile__ MODIFICATA per calcolare timestamp assoluti ---
 def __readFile__(pathToFile: str) -> list[TranscribedLine]:
@@ -48,23 +49,26 @@ def __readFile__(pathToFile: str) -> list[TranscribedLine]:
         transcription_basename = os.path.basename(pathToFile)
         if not transcription_basename.endswith("-TranscribedAudio.txt"):
              print(f"Warn: Formato nome file trascrizione inatteso: {transcription_basename}. Impossibile derivare chunk originale."); return []
-
-        chunk_basename = transcription_basename.replace("-TranscribedAudio.txt", "")
+        # Deriva il nome base del chunk SENZA estensione dal nome del file .txt
+        chunk_basename_no_ext = transcription_basename.replace("-TranscribedAudio.txt", "")
         chunk_abs_path_found = None
 
-        # Cerca il path assoluto del chunk nel manifest usando il basename
-        # Questo è un punto potenzialmente fragile se ci sono basename duplicati in diverse sub-dir
-        # Sarebbe meglio se `transcribeAudioFile` potesse restituire/salvare il path del chunk usato.
-        # Soluzione alternativa: Cercare il chunk_basename tra le chiavi del manifest.
-        possible_matches = [p for p in split_manifest_data['files'].keys() if os.path.basename(p) == chunk_basename]
-
+# Cerca il path assoluto del chunk nel manifest confrontando i nomi base SENZA estensione
+        possible_matches = [
+            p for p in split_manifest_data['files'].keys()
+            # Estrai il basename dal path nel manifest, rimuovi l'estensione e confronta
+            if os.path.splitext(os.path.basename(p))[0] == chunk_basename_no_ext
+        ]
         if len(possible_matches) == 1:
              chunk_abs_path_found = possible_matches[0]
+             # print(f"  DEBUG: Match found for {chunk_basename_no_ext}: {chunk_abs_path_found}") # Log Debug opzionale
         elif len(possible_matches) > 1:
-             print(f"Warn: Trovati multipli chunk corrispondenti a {chunk_basename} nel manifest. Impossibile determinare univocamente. Salto {pathToFile}.")
+             print(f"Warn: Trovati multipli chunk corrispondenti a {chunk_basename_no_ext} nel manifest ({possible_matches}). Impossibile determinare univocamente. Salto {pathToFile}.")
              return []
         else:
-             print(f"Warn: Nessun chunk trovato nel manifest per {chunk_basename} (da {pathToFile}). Salto.")
+             print(f"Warn: Nessun chunk trovato nel manifest per {chunk_basename_no_ext} (da {pathToFile}). Salto.")
+             # Stampa le prime chiavi del manifest per debug se non trova nulla
+             # print("DEBUG: Prime chiavi manifest:", list(split_manifest_data['files'].keys())[:5])
              return []
 
         # Ottieni i metadati del chunk dal manifest
