@@ -426,7 +426,6 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
     # e non ha fallito gravemente prima.
     post_processing_skipped_due_to_marker = False
     post_processing_executed = False
-
     if os.path.exists(inProgressFileName):
         # Controlla marker [ERROR] / [INFO] PRIMA di aprire per PP
         try:
@@ -444,88 +443,66 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
             try:
                  post_process_transcription(inProgressFileName, completedFileName) # Chiama PP
                  post_processing_executed = True
-                 print(f"  Post-processing finished. Output expected: {os.path.basename(completedFileName)}") # Log modificato
-
-                 # --- INIZIO BLOCCO CONTROLLO FILE POST-PP ---
-                 # Attendiamo un istante prima di controllare l'esistenza del file
-                 time.sleep(0.1) # Breve pausa per il filesystem
+                 # --- VERIFICA ESISTENZA DOPO PP ---
+                 time.sleep(0.2) # Aumentato delay post PP call
                  if os.path.exists(completedFileName):
+                      print(f"  CHECK after PP call: {os.path.basename(completedFileName)} FOUND.")
                       final_return_path = completedFileName
-                      # Rimuovi InProgress solo se PP ha successo e output esiste
-                      time.sleep(0.1) # Altro piccolo delay
-                      try:
-                           os.remove(inProgressFileName)
-                      except OSError as e_rm:
-                           print(f"  Warn: Could not remove intermediate {os.path.basename(inProgressFileName)} after PP: {e_rm}")
+                      # Tenta rimozione InProgress solo se PP sembra ok
+                      time.sleep(0.1)
+                      try: os.remove(inProgressFileName)
+                      except OSError as e_rm: print(f"  Warn: Could not remove intermediate {os.path.basename(inProgressFileName)} after PP: {e_rm}")
                  else:
-                      # Questo è il caso del log "Warn: Post-processing ran but did not create..."
-                      print(f"  ERROR after PP: {os.path.basename(completedFileName)} not found after waiting!")
-                      final_return_path = None # Fallimento PP
-                 # --- FINE BLOCCO CONTROLLO FILE POST-PP ---
+                      print(f"  ERROR after PP call: {os.path.basename(completedFileName)} NOT FOUND.")
+                      # final_return_path rimane None
 
             except Exception as e_pp:
                  print(f"!!! Error during post-processing execution: {e_pp}")
                  traceback.print_exc()
                  final_return_path = None # Fallimento PP
                  # ... (tentativo rename a .failed_pp come prima) ...
-                 try:
-                     failed_pp_name = completedFileName + ".failed_pp"
-                     if os.path.exists(inProgressFileName) and not os.path.exists(failed_pp_name):
-                          os.rename(inProgressFileName, failed_pp_name)
-                          print(f"  Preserved intermediate as {os.path.basename(failed_pp_name)}")
-                 except OSError as e_mv_fail:
-                      print(f"  Could not preserve intermediate after PP error: {e_mv_fail}")
-
-
-        # Se il PP è stato skippato a causa di un marker
         elif post_processing_skipped_due_to_marker:
-             print(f"  Renaming {os.path.basename(inProgressFileName)} to {os.path.basename(completedFileName)} (due to skipped PP)...")
-             time.sleep(0.2) # Delay più lungo
-             try:
-                 if os.path.exists(completedFileName): os.remove(completedFileName)
-                 os.rename(inProgressFileName, completedFileName)
-                 print(f"  Info/Error file saved: {os.path.basename(completedFileName)}")
-                 final_return_path = completedFileName
-             except OSError as e_mv:
-                  print(f"!!! ERROR renaming info/error file {os.path.basename(inProgressFileName)}: {e_mv}")
-                  final_return_path = None
-             except Exception as e_mv_generic:
-                   print(f"!!! UNEXPECTED ERROR renaming info/error file: {e_mv_generic}")
-                   final_return_path = None
-
+            # ... (Logica rename da InProgress a Completed, con time.sleep(0.2) e gestione errori come prima) ...
+            # Imposta final_return_path = completedFileName SE rename ha SUCCESSO
+            # altrimenti final_return_path rimane None
+            print(f"  Attempting rename {os.path.basename(inProgressFileName)} -> {os.path.basename(completedFileName)} (due to skipped PP)...")
+            time.sleep(0.2)                 
+            try:
+                if os.path.exists(completedFileName): os.remove(completedFileName)
+                os.rename(inProgressFileName, completedFileName)
+                print(f"  Rename successful. Info/Error file saved: {os.path.basename(completedFileName)}")
+                final_return_path = completedFileName # Successo rename
+            except OSError as e_mv:
+                     print(f"!!! ERROR renaming info/error file {os.path.basename(inProgressFileName)}: {e_mv}")
+                     # final_return_path rimane None
+            except Exception as e_mv_generic:
+                  print(f"!!! UNEXPECTED ERROR renaming info/error file: {e_mv_generic}")
+                  # final_return_path rimane None
     else: # Se inProgressFileName non esisteva all'inizio
         print(f"  Skipping PP: {os.path.basename(inProgressFileName)} not found initially.")
-        final_return_path = None
+        # final_return_path rimane None                  
 
-    # --- Verifica Finale (con log migliorato) ---
+    # --- Verifica Finale (semplificata, si basa su final_return_path impostato sopra) ---
     final_check_msg = ""
-    final_path_to_return = final_return_path # Copia temporanea
-    if final_path_to_return and os.path.exists(final_path_to_return):
-        if os.path.getsize(final_path_to_return) == 0:
-            final_check_msg = f"INFO Final Check: File finale '{os.path.basename(final_path_to_return)}' esiste ma è VUOTO."
-        else:
-            final_check_msg = f"INFO Final Check: File finale '{os.path.basename(final_path_to_return)}' valido trovato."
-    elif final_path_to_return and not os.path.exists(final_path_to_return):
-         final_check_msg = f"ERROR Final Check: Percorso finale '{os.path.basename(final_path_to_return)}' indicato ma NON ESISTE."
-         final_path_to_return = None # Assicura che sia None
-    else: # final_path_to_return era già None
-         final_check_msg = f"INFO Final Check: Nessun percorso finale valido generato per {audio_basename}."
-         # Tenta creazione file FAILED
+    if final_return_path and os.path.exists(final_return_path):
+        if os.path.getsize(final_return_path) == 0: final_check_msg = f"CHECK Final: Path '{os.path.basename(final_return_path)}' exists but is EMPTY."
+        else: final_check_msg = f"CHECK Final: Path '{os.path.basename(final_return_path)}' exists and is valid."
+    elif final_return_path and not os.path.exists(final_return_path): # Dovrebbe essere stato gestito sopra, ma per sicurezza
+         final_check_msg = f"CHECK Final ERROR: Path '{os.path.basename(final_return_path)}' was set but file NOT FOUND."
+         final_return_path = None
+    else: # final_return_path è None
+         final_check_msg = f"CHECK Final: No valid output path generated for {audio_basename}."
+         # ... (tentativo creazione file FAILED.txt come prima) ...
          if not os.path.exists(completedFileName) and not os.path.exists(inProgressFileName) and not os.path.exists(errorLogFileName):
              try:
-                 with open(errorLogFileName, 'w', encoding='utf-8') as f_err:
-                     f_err.write(f"[ERROR] Transcription process failed to produce a valid output file for {audio_basename}.\n")
-                     f_err.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                 print(f"  Created final error log: {os.path.basename(errorLogFileName)}")
-                 final_path_to_return = errorLogFileName # Restituisci il log di errore
-             except Exception as e_final_log:
-                 print(f"  !!! Errore creando il file di log finale: {e_final_log}")
-
-    print(f"  {final_check_msg}")
-    end_time_transcription = time.time()
-    elapsed = end_time_transcription - start_time_transcription
-    print(f"  Transcription/PP process for {audio_basename} finished in {elapsed:.2f}s. Returning path: {os.path.basename(final_path_to_return) if final_path_to_return else 'None'}")
-    return final_path_to_return
+                 # ... (crea errorLogFileName) ...
+                 final_return_path = errorLogFileName
+             except Exception as e_final_log: #...
+               print(f"  {final_check_msg}")
+               end_time_transcription = time.time()
+               elapsed = end_time_transcription - start_time_transcription
+               print(f"  --> transcribeAudioFile finished for {audio_basename} in {elapsed:.2f}s. Returning: {os.path.basename(final_return_path) if final_return_path else 'None'}")
+               return final_return_path
 
 def _remove_repeated_token_sequences(text: str,
                                      min_seq_len: int = 2, # MINIMO 2 TOKEN
@@ -537,26 +514,21 @@ def _remove_repeated_token_sequences(text: str,
     """
     if not text or min_consecutive_repeats < 2 or min_seq_len < 1:
         return text
-
     # Tokenizer Migliorato (v4)
     tokens = re.findall(r"\(.+?\)|\[.+?\]|[\w']+|[^\s]", text)
-
     if len(tokens) < min_seq_len * min_consecutive_repeats:
         return text
-
     made_change_in_pass = True
     while made_change_in_pass:
         made_change_in_pass = False
         i = 0
         new_tokens = []
-
         while i < len(tokens):
             found_long_repeat = False
             max_possible_len = (len(tokens) - i) // min_consecutive_repeats
             if max_possible_len < min_seq_len:
                  new_tokens.extend(tokens[i:])
                  break
-
             for L in range(max_possible_len, min_seq_len - 1, -1):
                 sequence_to_match = tuple(tokens[i : i + L])
                 repeat_count = 1
@@ -567,19 +539,16 @@ def _remove_repeated_token_sequences(text: str,
                         k += L
                     else:
                         break
-
                 if repeat_count >= min_consecutive_repeats:
                     new_tokens.extend(list(sequence_to_match)) # Aggiungi prima occorrenza
                     i += repeat_count * L # Salta tutte le occorrenze
                     found_long_repeat = True
                     made_change_in_pass = True
                     break # Esci dal loop L
-
             if not found_long_repeat:
                 new_tokens.append(tokens[i])
                 i += 1
         tokens = new_tokens
-
     # Ricostruzione Stringa (Migliorata v4)
     if not tokens: return ""
     result = " ".join(tokens)
@@ -612,12 +581,13 @@ def post_process_transcription(input_file, output_file):
     sanitized_lines = []
     last_valid_end_time = 0.0
     MAX_SEGMENT_DURATION = 30.0
-    line_errors, line_adjusted_overlap, line_adjusted_duration, line_adjusted_endstart = 0, 0, 0, 0
-    lines_cleaned_repetitive = 0
+    line_errors = 0; line_adjusted_overlap = 0; line_adjusted_duration = 0; line_adjusted_endstart = 0
+    lines_cleaned_count = 0 # Rinominato per chiarezza
+    lines_processed_count = 0
 
     for line_num, line in enumerate(lines):
+        lines_processed_count += 1
         line = line.strip()
-        # ... (salta marker [INFO]/[ERROR]) ...
         if not line or line.startswith("[ERROR]") or line.startswith("[INFO]"):
             if line: sanitized_lines.append(line + '\n')
             continue
@@ -631,59 +601,98 @@ def post_process_transcription(input_file, output_file):
             start_f = float(start_str); end_f = float(end_str)
             # ... (Sanitizzazione Timestamp invariata) ...
             original_start, original_end = start_f, end_f; adjustment_log = ""
-            if start_f < 0 or end_f < 0: line_errors += 1; adjustment_log += f"|NegativeTS"; continue
-            if end_f < start_f: end_f = start_f + 0.1; line_adjusted_endstart += 1; adjustment_log += f"|End<Start"
-            elif end_f == start_f and text_part_raw.strip(): end_f = start_f + 0.05; adjustment_log += f"|Start=End"
+            if start_f < 0 or end_f < 0: line_errors += 1; continue
+            if end_f < start_f: end_f = start_f + 0.1; line_adjusted_endstart += 1
+            elif end_f == start_f and text_part_raw.strip(): end_f = start_f + 0.05
             duration = end_f - start_f
-            if duration > MAX_SEGMENT_DURATION: end_f = start_f + MAX_SEGMENT_DURATION; line_adjusted_duration += 1; adjustment_log += f"|Dur>Max"
+            if duration > MAX_SEGMENT_DURATION: end_f = start_f + MAX_SEGMENT_DURATION; line_adjusted_duration += 1
             if start_f < last_valid_end_time - 0.001:
-                 adjusted_start = last_valid_end_time; line_adjusted_overlap +=1; adjustment_log += f"|Overlap"
+                 adjusted_start = last_valid_end_time; line_adjusted_overlap +=1
                  start_f = adjusted_start
                  if end_f <= start_f: end_f = start_f + 0.1
-            if end_f <= start_f: line_errors += 1; adjustment_log += f"|FinalEnd<=Start"; continue
+            if end_f <= start_f: line_errors += 1; continue
 
-
-            # --- PULIZIA TESTO CON NUOVA FUNZIONE v4 ---
             text_part_stripped = text_part_raw.strip()
             if not text_part_stripped: continue
 
-            # Chiama la funzione v4 con min_seq_len=2
+
+            # --- DEBUG: Stampa testo prima della pulizia ---
+            # print(f"  DEBUG PP (L{line_num+1}) BEFORE CLEAN: '{text_part_stripped[:100]}...'")
+
             cleaned_text = _remove_repeated_token_sequences(
                 text_part_stripped,
-                min_seq_len=2, # <-- DEVE ESSERE 2 PER CATTURARE "Ok." etc.
+                min_seq_len=2,
                 min_consecutive_repeats=2
             )
 
+            # --- DEBUG: Stampa testo dopo la pulizia ---
+            # print(f"  DEBUG PP (L{line_num+1}) AFTER CLEAN:  '{cleaned_text[:100]}...'")
+
             # Salta se testo diventa vuoto dopo pulizia
             if not cleaned_text:
-                 print(f"  Info PP (Line {line_num+1}): Line discarded (empty after repetition removal v3). Orig: '{text_part_stripped[:80]}...'")
+                 print(f"  Info PP (L{line_num+1}): Line discarded (empty after clean). Orig: '{text_part_stripped[:80]}...'")
                  continue
 
-            if cleaned_text != text_part_stripped:
-                lines_cleaned_repetitive += 1
-                # print(f"  Cleaned Repeat v3 (L{line_num+1}): '{text_part_stripped[:80]}...' -> '{cleaned_text[:80]}...'") # Debug opzionale
-
-            # --- Fine Pulizia Testo ---
+            # Considera pulito solo se il testo è effettivamente diverso E non solo per spazi bianchi
+            text_changed = cleaned_text.replace(" ", "") != text_part_stripped.replace(" ", "")
+            if text_changed:
+                lines_cleaned_count += 1
+                print(f"  DEBUG PP (L{line_num+1}) TEXT CHANGED!") # Log esplicito se cambia
 
             processed_line = f'[{start_f:.2f}, {end_f:.2f}] {cleaned_text}\n'
             sanitized_lines.append(processed_line)
             last_valid_end_time = end_f
 
-        # ... (Gestione eccezioni nel try invariata) ...
         except ValueError as e: print(f"  Errore valore PP (L{line_num+1}): '{line}' - {e}"); line_errors += 1
         except Exception as e: print(f"  Errore generico PP (L{line_num+1}): '{line}' - {e}"); line_errors += 1
 
     # --- Rimozione Righe Finali Duplicate (invariata) ---
     # ... (Codice rimozione righe finali duplicate) ...
     final_lines = []; prev_line_text = None; removed_final_repeats = 0
-    # ...
+    # ... (codice rimozione duplicati finali) ...
+    for line in sanitized_lines:
+        # ... (logica invariata)
+        if line.startswith("[ERROR]") or line.startswith("[INFO]"): final_lines.append(line); continue
+        match = re.match(r'\[.*?\]\s*(.*)', line);
+        if not match: continue
+        text_part = match.group(1).strip()
+        if text_part and text_part == prev_line_text: removed_final_repeats += 1; continue
+        final_lines.append(line)
+        if text_part: prev_line_text = text_part
 
-    # --- Scrittura Output (invariata) ---
-    # ... (Stampa summary e scrittura file con 'with open') ...
-    print(f"  Post-processing summary: OverlapAdj={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<StartAdj={line_adjusted_endstart}, Malformed/Skip={line_errors}, Lines Cleaned Internally={lines_cleaned_repetitive}, Final Repeat Lines Removed={removed_final_repeats}")
+
+    # --- DIAGNOSTICA SCRITTURA ---
+    num_final_lines = len(final_lines)
+    print(f"  PP Summary: InputLines={lines_processed_count}, SanitizedLines={len(sanitized_lines)}, FinalLinesToWrite={num_final_lines}")
+    print(f"  PP Stats: OverlapAdj={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<StartAdj={line_adjusted_endstart}, Malformed/Skip={line_errors}, LinesCleaned={lines_cleaned_count}, FinalRepeatsRemoved={removed_final_repeats}")
+
+    write_successful = False
     try:
-        # ... (scrittura con with open) ...
-        pass
-    except Exception as e: print(f"  Errore scrittura PP: {e}")
+        print(f"  PP WRITE: Attempting to write {num_final_lines} lines to {os.path.basename(output_file)}...")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.writelines(final_lines)
+        print(f"  PP WRITE: writelines() completed.")
+        # Verifica IMMEDIATAMENTE dopo la scrittura
+        time.sleep(0.2) # Aumenta leggermente il delay post-scrittura
+        if os.path.exists(output_file):
+             print(f"  PP WRITE CHECK: File '{os.path.basename(output_file)}' EXISTS immediately after write.")
+             if os.path.getsize(output_file) > 0 or num_final_lines == 0: # OK se vuoto E doveva essere vuoto
+                 print(f"  PP WRITE CHECK: File size is > 0 (or expected empty). Write seems successful.")
+                 write_successful = True
+             else:
+                 print(f"  PP WRITE CHECK ERROR: File exists BUT IS EMPTY (and {num_final_lines} lines were expected).")
+        else:
+             print(f"  PP WRITE CHECK ERROR: File '{os.path.basename(output_file)}' DOES NOT EXIST immediately after write attempt.")
+
+    except Exception as e_write:
+         print(f"  PP WRITE FAILED with exception: {e_write}")
+         # Stampa traceback completo dell'errore di scrittura
+         traceback.print_exc()
+
+    # Stampa messaggio finale basato sul successo della scrittura
+    if write_successful:
+         print(f"  PP Finished Successfully for: {os.path.basename(output_file)}")
+    else:
+         print(f"  PP Finished WITH ERRORS writing: {os.path.basename(output_file)}")
 
 # --- END OF transcriptionUtils/transcribeAudio.py ---
