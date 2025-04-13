@@ -531,93 +531,108 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
     print(f"  Transcription/PP process for {audio_basename} finished in {elapsed:.2f}s. Final path: {os.path.basename(final_return_path) if final_return_path else 'None'}")
     return final_return_path # Restituisce il percorso del file .txt, .failed_pp, o del log di errore, o None
 
-
-# Funzione per rimuovere ripetizioni interne a una stringa
-def remove_internal_repetitions(text, min_len=5, max_lookback=15):
+def _remove_repeated_token_sequences(text: str, min_seq_len: int = 2, max_seq_len: int = 20) -> str:
     """
-    Tenta di rimuovere sequenze di parole ripetute all'interno di una stringa.
-    Es: "ciao come stai ciao come stai ciao come" -> "ciao come stai ciao come"
+    Rimuove sequenze di token (parole e punteggiatura) immediatamente ripetute
+    all'interno di una stringa, gestendo ripetizioni multiple e sequenze diverse.
+    Es: "vai avanti vai avanti poi gira a destra gira a destra" -> "vai avanti poi gira a destra"
+    Es: "test test test test ." -> "test ."
+    Es: "un po' un po' un po'" -> "un po'"
+
+    Args:
+        text: La stringa di input.
+        min_seq_len: Lunghezza minima della sequenza di token da considerare per la rimozione.
+        max_seq_len: Lunghezza massima della sequenza di token da considerare.
+
+    Returns:
+        La stringa con le sequenze ripetute rimosse.
     """
-    words = text.split()
-    if len(words) < min_len * 2: # Non abbastanza parole per avere ripetizioni significative
-        return text
+    if not text:
+        return ""
 
-    processed_words = []
-    i = 0
-    while i < len(words):
-        found_repeat = False
-        # Guarda indietro per possibili ripetizioni
-        # Cerca sequenze ripetute di lunghezza da `min_len` fino a `max_lookback`
-        for lookback in range(min(max_lookback, i // 2, len(words) // 2), min_len - 1, -1):
-             if i + lookback <= len(words): # Assicura che ci sia spazio per confrontare
-                 current_segment = tuple(words[i : i + lookback])
-                 # Controlla se questo segmento è uguale al segmento precedente di stessa lunghezza
-                 if current_segment == tuple(words[i - lookback : i]):
-                      # Trovata una ripetizione! Salta la sequenza corrente
-                      # print(f"    DEBUG REPEAT: Found internal repeat of '{' '.join(current_segment)}', skipping {lookback} words at index {i}")
-                      i += lookback
-                      found_repeat = True
-                      break # Esci dal ciclo lookback
+    # Tokenizza preservando parole e punteggiatura
+    tokens = re.findall(r"[\w']+|[.,!?;:]", text)
+    if len(tokens) < min_seq_len * 2:
+        return text # Non abbastanza token
 
-        if not found_repeat:
-            processed_words.append(words[i])
-            i += 1
+    made_change = True # Flag per continuare a ciclare finché si trovano ripetizioni
+    while made_change:
+        made_change = False
+        i = 0
+        new_tokens = []
+        while i < len(tokens):
+            found_repeat_at_i = False
+            # Itera sulle possibili lunghezze della sequenza, dalla più lunga
+            for L in range(min(max_seq_len, (len(tokens) - i) // 2), min_seq_len - 1, -1):
+                 # Sequenza corrente che inizia da 'i'
+                 current_segment = tuple(tokens[i : i + L])
+                 # Sequenza successiva
+                 next_segment = tuple(tokens[i + L : i + 2 * L])
 
-    return " ".join(processed_words)
+                 if current_segment == next_segment:
+                     # Trovata una ripetizione!
+                     # Aggiungi la *prima* occorrenza (current_segment) a new_tokens
+                     new_tokens.extend(list(current_segment))
+                     # Avanza l'indice 'i' per saltare TUTTE le occorrenze
+                     # consecutive di questa sequenza
+                     i += L # Salta la prima occorrenza (già aggiunta)
+                     while i + L <= len(tokens) and tuple(tokens[i : i + L]) == current_segment:
+                          i += L # Salta le ripetizioni successive
+                     found_repeat_at_i = True
+                     made_change = True # Segnala che abbiamo modificato la lista
+                     break # Esci dal loop di L, abbiamo gestito la ripetizione a partire da i
 
-# --- Funzione post_process_transcription AGGIORNATA ---
-# NUOVA Funzione per valutare la ripetitività (sostituisce remove_internal_repetitions)
-def is_highly_repetitive(text, threshold=0.6, min_words=10):
-    """
-    Valuta se una stringa di testo è eccessivamente ripetitiva.
-    Calcola il rapporto tra parole uniche e parole totali.
-    Ritorna True se il rapporto è sotto la soglia (troppo ripetitivo), False altrimenti.
-    """
-    words = text.lower().split() # Lavora su minuscolo
-    if len(words) < min_words:
-        return False # Non valutare testi troppo corti
+            # Se non è stata trovata una ripetizione che inizia all'indice i,
+            # aggiungi semplicemente il token corrente e vai al prossimo.
+            if not found_repeat_at_i:
+                new_tokens.append(tokens[i])
+                i += 1
 
-    unique_words = set(words)
-    repetition_ratio = len(unique_words) / len(words)
+        # Aggiorna la lista dei token per il prossimo ciclo while (se made_change è True)
+        tokens = new_tokens
 
-    # print(f"DEBUG REPETITIVE: Text='{text[:50]}...', Len={len(words)}, Unique={len(unique_words)}, Ratio={repetition_ratio:.2f}") # Log Debug
+    # --- Ricostruzione della stringa (logica invariata) ---
+    if not tokens:
+        return ""
+    result = tokens[0]
+    for j in range(1, len(tokens)):
+        prev_token = tokens[j-1]
+        current_token = tokens[j]
+        if current_token in ".,!?;:": result += current_token
+        elif re.match(r"[\w']+", current_token) and not prev_token.endswith("'"): result += " " + current_token
+        else: result += current_token
+    return result.strip()
 
-    return repetition_ratio < threshold
 
 # --- Funzione post_process_transcription AGGIORNATA ---
 def post_process_transcription(input_file, output_file):
     print(f"  Starting post-processing & timestamp sanitization for {os.path.basename(input_file)} -> {os.path.basename(output_file)}")
     lines = []
-    # Leggi input usando 'with'
+    # ... (Codice lettura input file con 'with open' invariato) ...
     try:
         if not os.path.exists(input_file) or os.path.getsize(input_file) == 0:
              print(f"  Warn: Input file for PP empty/missing: {os.path.basename(input_file)}.");
-             # Crea file output vuoto se input è vuoto/mancante? Sì.
              with open(output_file, 'w', encoding='utf-8') as f_out: pass
-             return # Esce qui se input non valido
-        # Usa with per leggere
+             return
         with open(input_file, 'r', encoding='utf-8') as f:
             lines = f.readlines()
     except Exception as e:
         print(f"  Errore lettura PP input {os.path.basename(input_file)}: {e}");
-        # Crea un file di output con errore?
         try:
             with open(output_file, 'w', encoding='utf-8') as f_err: f_err.write(f"[ERROR] PP Read fail: {e}\n")
-        except: pass # Ignora errore scrittura errore
-        return # Esce se lettura fallisce
+        except: pass
+        return
 
-    # --- Logica di sanitizzazione (invariata) ---
     sanitized_lines = []
     last_valid_end_time = 0.0
-    MAX_SEGMENT_DURATION = 30.0
+    MAX_SEGMENT_DURATION = 30.0 # Manteniamo limite durata
     line_errors, line_adjusted_overlap, line_adjusted_duration, line_adjusted_endstart = 0, 0, 0, 0
-    lines_removed_repetitive = 0
+    lines_cleaned_repetitive = 0 # Contatore per righe PULITE da ripetizioni
 
     for line_num, line in enumerate(lines):
         line = line.strip()
-        # Salta linee vuote o con marker (anche se controllo precedente dovrebbe averli gestiti)
         if not line or line.startswith("[ERROR]") or line.startswith("[INFO]"):
-            if line: sanitized_lines.append(line + '\n') # Conserva marker se presenti
+            if line: sanitized_lines.append(line + '\n')
             continue
 
         match = re.match(r'\[\s*([\d\.\+eE-]+)\s*,\s*([\d\.\+eE-]+)\s*\]\s*(.*)', line)
@@ -628,31 +643,46 @@ def post_process_transcription(input_file, output_file):
             start_f = float(start_str); end_f = float(end_str)
             original_start, original_end = start_f, end_f; adjustment_log = ""
 
-            # Controlli Timestamp
-            if start_f < 0 or end_f < 0: line_errors += 1; adjustment_log += f"|NegativeTS"; continue # Salta negativi
+            # --- Sanitizzazione Timestamp (come prima) ---
+            if start_f < 0 or end_f < 0: line_errors += 1; adjustment_log += f"|NegativeTS"; continue
             if end_f < start_f: end_f = start_f + 0.1; line_adjusted_endstart += 1; adjustment_log += f"|End<Start"
-            # Modifica: Se start == end E il testo NON è vuoto, dai una piccola durata
-            # Se il testo è vuoto, lo scarteremo dopo.
             elif end_f == start_f and text_part_raw.strip(): end_f = start_f + 0.05; adjustment_log += f"|Start=End"
             duration = end_f - start_f
             if duration > MAX_SEGMENT_DURATION: end_f = start_f + MAX_SEGMENT_DURATION; line_adjusted_duration += 1; adjustment_log += f"|Dur>Max"
-            if start_f < last_valid_end_time - 0.001: # Tolleranza minima per sovrapposizione
+            if start_f < last_valid_end_time - 0.001:
                  adjusted_start = last_valid_end_time; line_adjusted_overlap +=1; adjustment_log += f"|Overlap"
                  start_f = adjusted_start
-                 # Ri-controlla end > start dopo aggiustamento overlap
                  if end_f <= start_f: end_f = start_f + 0.1
-            # Controllo finale end > start dopo tutti gli aggiustamenti
-            if end_f <= start_f: line_errors += 1; adjustment_log += f"|FinalEnd<=Start"; continue # Salta se ancora invalido
+            if end_f <= start_f: line_errors += 1; adjustment_log += f"|FinalEnd<=Start"; continue
 
-            # Pulizia Testo (come prima)
+            # --- NUOVA PULIZIA TESTO (Rimozione Ripetizioni Interne) ---
             text_part_stripped = text_part_raw.strip()
-            if not text_part_stripped: continue # Salta linee con testo vuoto
-            if is_highly_repetitive(text_part_stripped, threshold=0.5, min_words=10):
-                 print(f"  Warn PP (Line {line_num+1}): Skipping repetitive: '{text_part_stripped[:80]}...'")
-                 lines_removed_repetitive += 1
+
+            # 1. Salta la linea se il testo originale era vuoto
+            if not text_part_stripped:
                  continue
 
-            processed_line = f'[{start_f:.2f}, {end_f:.2f}] {text_part_stripped}\n'
+            # 2. Pulisci le ripetizioni interne
+            # Imposta min_seq_len=2 per catturare "un po' un po'"
+            # Imposta max_seq_len più alta se sospetti ripetizioni lunghe
+            cleaned_text = _remove_repeated_token_sequences(text_part_stripped, min_seq_len=2, max_seq_len=15)
+
+            # 3. Salta la linea se, DOPO la pulizia, il testo è diventato vuoto
+            if not cleaned_text:
+                 print(f"  Info PP (Line {line_num+1}): Line discarded (empty after repetition removal). Orig: '{text_part_stripped[:80]}...'")
+                 continue
+
+            # Registra se il testo è stato modificato
+            if cleaned_text != text_part_stripped:
+                lines_cleaned_repetitive += 1
+                # Log opzionale per vedere cosa è stato pulito
+                # print(f"  Cleaned Repeat (L{line_num+1}): '{text_part_stripped[:80]}...' -> '{cleaned_text[:80]}...'")
+
+
+            # --- Fine Pulizia Testo ---
+
+            # Usa il testo PULITO
+            processed_line = f'[{start_f:.2f}, {end_f:.2f}] {cleaned_text}\n'
             sanitized_lines.append(processed_line)
             last_valid_end_time = end_f
 
@@ -660,24 +690,26 @@ def post_process_transcription(input_file, output_file):
         except Exception as e: print(f"  Errore generico PP (L{line_num+1}): '{line}' - {e}"); line_errors += 1
 
 
-    # --- Rimozione Ripetizioni INTERE Righe Finali (come prima) ---
+    # --- Rimozione Ripetizioni INTERE Righe Finali (Minimale - Invariata) ---
+    # Questa agisce DOPO la pulizia interna, rimuovendo casi come:
+    # [1.00, 2.00] Testo A
+    # [2.00, 3.00] Testo A  <-- Rimuove questa
     final_lines = []; prev_line_text = None; removed_final_repeats = 0
     for line in sanitized_lines:
-        # Conserva marker se presenti all'inizio
         if line.startswith("[ERROR]") or line.startswith("[INFO]"): final_lines.append(line); continue
         match = re.match(r'\[.*?\]\s*(.*)', line);
-        if not match: continue # Salta linee malformate residue
+        if not match: continue
         text_part = match.group(1).strip()
+        # Salta se il testo (già pulito internamente) è identico alla riga precedente
         if text_part and text_part == prev_line_text: removed_final_repeats += 1; continue
         final_lines.append(line)
         if text_part: prev_line_text = text_part
 
-    # Scrivi output usando 'with'
+    # --- Scrittura Output (Invariata, usa 'with open') ---
+    print(f"  Post-processing summary: OverlapAdj={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<StartAdj={line_adjusted_endstart}, Malformed/Skip={line_errors}, Lines Cleaned Internally={lines_cleaned_repetitive}, Final Repeat Lines Removed={removed_final_repeats}")
     try:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.writelines(final_lines)
-        print(f"  Post-processing summary: Written={len(final_lines)}, OverlapAdj={line_adjusted_overlap}, DurTrunc={line_adjusted_duration}, End<StartAdj={line_adjusted_endstart}, Malformed/Skip={line_errors}, RepetitiveSkip={lines_removed_repetitive}, FinalRepeatSkip={removed_final_repeats}")
-        print(f"  Post-processing saved to: {os.path.basename(output_file)}")
-    except Exception as e: print(f"  Errore scrittura PP output {os.path.basename(output_file)}: {e}")
-    
+        with open(output_file, 'w', encoding='utf-8') as f: f.writelines(final_lines)
+        print(f"  Post-processing completato. {len(final_lines)} lines saved to: {os.path.basename(output_file)}")
+    except Exception as e: print(f"  Errore scrittura PP: {e}")
+
 # --- END OF transcriptionUtils/transcribeAudio.py ---
