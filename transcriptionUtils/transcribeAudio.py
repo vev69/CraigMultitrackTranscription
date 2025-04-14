@@ -1,18 +1,18 @@
 # --- START OF transcriptionUtils/transcribeAudio.py ---
-import whisper
+import whisper # type: ignore
 from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor, GenerationConfig
-import torch
+import torch # type: ignore
 import sys
 import os
 import re
 import traceback
 import time # Per pause potenziali
-import numpy as np # Necessario per noisereduce
+import numpy as np # type: ignore # Necessario per noisereduce
 
 # --- Import per preprocessing ---
 try:
-    import soundfile as sf
-    import noisereduce as nr
+    import soundfile as sf # type: ignore
+    import noisereduce as nr # type: ignore
     SOUNDFILE_AVAILABLE = True
     NOISEREDUCE_AVAILABLE = True
     print("Moduli soundfile e noisereduce importati per preprocessing.")
@@ -22,19 +22,20 @@ except ImportError as e:
     NOISEREDUCE_AVAILABLE = False
 
 try:
-    from pydub import AudioSegment
-    from pydub.exceptions import CouldntDecodeError
+    from pydub import AudioSegment # type: ignore
+    from pydub.exceptions import CouldntDecodeError # type: ignore
     PYDUB_AVAILABLE = True
     print("Modulo pydub importato per normalizzazione.")
 except ImportError:
     print("ATTENZIONE: Modulo pydub non trovato (pip install pydub). La normalizzazione non verrà eseguita.")
     PYDUB_AVAILABLE = False
 # -----------------------------
-
-BATCH_SIZE_HF = 16
+# Valori default per parametri funzione
+DEFAULT_NUM_BEAMS_TA = 1
+DEFAULT_BATCH_SIZE_HF_TA = 16
 
 try:
-    from optimum.bettertransformer import BetterTransformer
+    from optimum.bettertransformer import BetterTransformer # type: ignore
     OPTIMUM_AVAILABLE = True
     print("Modulo Optimum BetterTransformer importato.")
 except ImportError:
@@ -265,7 +266,7 @@ def load_model(model_choice_with_size: str):
             config = GenerationConfig(
                 bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
                 decoder_start_token_id=decoder_start_token_id, forced_decoder_ids=forced_decoder_ids,
-                return_timestamps=True, no_timestamps_token_id=eos_token_id, max_length=448, num_beams=1
+                return_timestamps=True, no_timestamps_token_id=eos_token_id, max_length=448
             )
             model.generation_config = config; print("GenerationConfig assegnata.")
         except Exception as e: print(f"Errore creazione GenerationConfig: {e}"); raise
@@ -284,19 +285,24 @@ def load_model(model_choice_with_size: str):
 
 
 # Funzione per trascrivere un file audio (legge da input_path, output in output_dir)
-def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: str):
+def transcribeAudioFile(input_path: str,
+                        model,
+                        model_choice: str,
+                        output_dir: str,
+                        # NUOVI ARGOMENTI OPZIONALI con default
+                        num_beams: int = DEFAULT_NUM_BEAMS_TA,  # Usa i tuoi default qui
+                        batch_size_hf: int = DEFAULT_BATCH_SIZE_HF_TA): # Usa i tuoi default qui
     """
-    Trascrive un file audio (da input_path) e salva i risultati in output_dir.
+    Trascrive un file audio (da input_path) gestisce il caso 'No segments' e salva i risultati in output_dir.
     Nota: model_choice ora può includere la dimensione (es. "whisper-largev2").
-    Gestisce il caso 'No segments' e cerca di evitare file lock.
+    Gestisce il caso 'No segments' e accetta parametri per i modelli HF e cerca di evitare file lock.
     """
-    global BATCH_SIZE_HF
     completedFileName = None
     inProgressFileName = None
     audio_basename = os.path.basename(input_path)
     start_time_transcription = time.time()
     final_return_path = None # Variabile per memorizzare il percorso da restituire
-    
+
     # --- Setup Nomi File ---
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -374,12 +380,20 @@ def transcribeAudioFile(input_path: str, model, model_choice: str, output_dir: s
         try:
             print(f"Transcribing {audio_basename} with {model_choice} (HF Pipeline)...")
             # ... (chiamata al modello HF, gestione OOM come prima) ...
-            print(f"  Using batch_size={BATCH_SIZE_HF}, temperature=0.0, num_beams=1")
-            result = model( input_path, return_timestamps=True, chunk_length_s=30,
-                            batch_size=BATCH_SIZE_HF, generate_kwargs={ "temperature": 0.0, "num_beams": 1, } )
+            print(f"  Using batch_size={batch_size_hf},  temperature=0.0, num_beams={num_beams}")
+            result = model(
+                input_path,
+                return_timestamps=True,
+                chunk_length_s=30,
+                batch_size=batch_size_hf, # Usa parametro
+                generate_kwargs={
+                    "temperature": 0.0,
+                    "num_beams": num_beams # Usa parametro
+                }
+            )
 
         except torch.cuda.OutOfMemoryError:
-             oom_msg = f"[ERROR] CUDA OutOfMemoryError batch_size={BATCH_SIZE_HF}. Riduci BATCH_SIZE_HF.\n"
+             oom_msg = f"[ERROR] CUDA OutOfMemoryError batch_size={batch_size_hf}. Riduci BATCH_SIZE_HF.\n"
              print(oom_msg.strip());
              try: # Scrivi errore e chiudi file
                  with open(inProgressFileName, 'w', encoding='utf-8') as file: file.write(oom_msg)

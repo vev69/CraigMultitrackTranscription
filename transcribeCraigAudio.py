@@ -8,7 +8,7 @@ import transcriptionUtils.transcribeAudio as transcribe
 import transcriptionUtils.combineSpeakerTexts as combineSpeakers
 import transcriptionUtils.preprocessAudioFiles as preprocessor
 import transcriptionUtils.splitAudio as splitter
-import torch
+import torch # type: ignore
 import shutil
 import platform
 import time
@@ -27,7 +27,7 @@ try:
         print("Importato subprocess per la gestione standby su macOS (caffeinate).")
     elif platform.system() == "Linux":
         try:
-            import pydbus
+            import pydbus # type: ignore
             bus = pydbus.SessionBus()
             inhibitor = None
             print("Importato pydbus per la gestione standby su Linux (D-Bus).")
@@ -53,7 +53,7 @@ checkpoint_data = {}
 
 # --- Valori di Default per Parametri Interattivi (NUOVO) ---
 DEFAULT_NUM_BEAMS = 1
-DEFAULT_BATCH_SIZE_HF = 24
+DEFAULT_BATCH_SIZE_HF = 16
 
 # --- Funzioni Gestione Standby (invariate) ---
 def prevent_sleep():
