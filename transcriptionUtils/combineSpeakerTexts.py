@@ -243,7 +243,7 @@ def _compare_transcribed_lines(lineA: TranscibedLineWithSpeaker, lineB: Transcib
          1 se A > B (B viene prima)
     """
     # Tolleranza per considerare i timestamp quasi uguali
-    tolerance = 0.05 # 50 ms
+    tolerance = 0.15 #deafault 0.05 ovvero 50 ms
 
     # 1. Caso Base: Ordinamento per inizio timestamp
     if abs(lineA.timeStampStart - lineB.timeStampStart) > tolerance:
