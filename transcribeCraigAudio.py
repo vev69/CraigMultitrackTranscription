@@ -7,7 +7,6 @@ import signal
 import transcriptionUtils.transcribeAudio as transcribe
 import transcriptionUtils.combineSpeakerTexts as combineSpeakers
 import transcriptionUtils.preprocessAudioFiles as preprocessor
-# NUOVA IMPORTAZIONE PER LA DIVISIONE
 import transcriptionUtils.splitAudio as splitter
 import torch
 import shutil
@@ -42,7 +41,7 @@ except ImportError as e: print(f"Errore import moduli specifici OS per standby: 
 except Exception as e: print(f"Errore generico import per standby: {e}")
 
 
-SUPPORTED_FILE_EXTENSIONS = (".flac",)
+SUPPORTED_FILE_EXTENSIONS = (".flac",".m4a")
 CHECKPOINT_FILE = "transcription_checkpoint.json"
 BASE_OUTPUT_FOLDER_NAME = "transcription_output"
 # NUOVE COSTANTI PER LE DIRECTORY INTERMEDIE
@@ -51,6 +50,10 @@ PREPROCESSED_FOLDER_NAME = "audio_preprocessed_chunks" # Cartella per chunk proc
 
 # Global variable for checkpointing
 checkpoint_data = {}
+
+# --- Valori di Default per Parametri Interattivi (NUOVO) ---
+DEFAULT_NUM_BEAMS = 1
+DEFAULT_BATCH_SIZE_HF = 24
 
 # --- Funzioni Gestione Standby (invariate) ---
 def prevent_sleep():
@@ -144,17 +147,18 @@ def load_checkpoint():
         except Exception as e: print(f"Errore caricamento checkpoint: {e}."); checkpoint_data = {}; return False
     else: checkpoint_data = {}; return False
 
-# --- MODIFICATA Funzione transcribeFilesInDirectory ---
-# Ora opera sui file chunk listati nel manifest.
-def transcribeFilesInDirectory(split_manifest: dict, # Passiamo il manifest caricato
-                               preprocessed_dir: str, # Dir con chunk preprocessati
+# --- MODIFICATA Funzione transcribeFilesInDirectory (per accettare parametri) ---
+def transcribeFilesInDirectory(split_manifest: dict,
+                               preprocessed_dir: str,
                                model,
                                model_choice: str,
-                               output_dir: str):
+                               output_dir: str,
+                               # NUOVI PARAMETRI AGGIUNTI
+                               num_beams: int,
+                               batch_size_hf: int):
     """
     Trascrive i file audio chunk (o file originali corti) listati nel manifest.
-    Controlla l'esistenza del chunk preprocessato corrispondente prima di procedere.
-    Usa il checkpoint globale basato sui percorsi dei *chunk file*.
+    Passa i parametri num_beams e batch_size_hf a transcribeAudioFile.
     """
     global checkpoint_data
     filesTranscribed_chunk_paths = [] # Lista dei percorsi dei chunk tentati
@@ -201,9 +205,16 @@ def transcribeFilesInDirectory(split_manifest: dict, # Passiamo il manifest cari
         # 3. Se non già processato e il file preprocessato esiste, procedi con la trascrizione
         print(f"\n--- ({file_index+1}/{total_chunks}) Trascrizione '{model_choice}' per: {chunk_filename} (da: {os.path.basename(preprocessed_chunk_path)}) ---")
 
-        # Chiama la trascrizione usando il file chunk preprocessato
-        output_file_path = transcribe.transcribeAudioFile(preprocessed_chunk_path, model, model_choice, output_dir)
-
+        # Chiama la trascrizione PASSANDO I NUOVI PARAMETRI
+        output_file_path = transcribe.transcribeAudioFile(
+            preprocessed_chunk_path,
+            model,
+            model_choice,
+            output_dir,
+            # Passa i parametri ricevuti
+            num_beams=num_beams,
+            batch_size_hf=batch_size_hf
+        )
         # --- LOGICA SUCCESSO/FALLIMENTO (basata su output_file_path) ---
         # Aggiungi il chunk_abs_path al checkpoint *indipendentemente* dal successo/fallimento
         checkpoint_data['files_processed'].setdefault(model_choice, []).append(chunk_abs_path)
@@ -233,12 +244,20 @@ if __name__ == "__main__":
 
     prevent_sleep()
 
+    # --- Variabili per i parametri (NUOVO) ---
+    num_beams_to_use = DEFAULT_NUM_BEAMS
+    batch_size_hf_to_use = DEFAULT_BATCH_SIZE_HF
+
     # --- Load Checkpoint or Initialize ---
     checkpoint_found = load_checkpoint()
 
     if checkpoint_found:
         # ... (Logica ripresa/nuova sessione invariata, ma mostra info aggiuntive) ...
         print(f"Ripresa da checkpoint.")
+        # Recupera parametri da checkpoint, se presenti
+        num_beams_to_use = checkpoint_data.get("num_beams", DEFAULT_NUM_BEAMS)
+        batch_size_hf_to_use = checkpoint_data.get("batch_size_hf", DEFAULT_BATCH_SIZE_HF)
+        print(f"Utilizzo parametri da checkpoint/default: Beams={num_beams_to_use}, BatchSize={batch_size_hf_to_use}")        
         print(f"  Directory input originale: {checkpoint_data.get('base_input_directory', 'N/A')}")
         print(f"  Directory split audio: {checkpoint_data.get('split_audio_directory', 'N/A')}")
         print(f"  Directory preprocessed chunks: {checkpoint_data.get('preprocessed_audio_directory', 'N/A')}")
@@ -324,39 +343,103 @@ if __name__ == "__main__":
             if not invalid_selection and selected_models: print(f"Modelli selezionati: {', '.join(selected_models)}"); break
             else: print("Selezione non valida. Riprova.")
 
+        # --- Richiesta Parametri Interattiva (NUOVO) ---
+        print("\n--- Configurazione Parametri Trascrizione (per modelli HF) ---")
+        while True:
+            try:
+                beams_input = input(f"Numero di beams (default {DEFAULT_NUM_BEAMS}, Invio per default): ").strip()
+                num_beams_to_use = DEFAULT_NUM_BEAMS if not beams_input else int(beams_input)
+                if num_beams_to_use > 0: break
+                else: print("Inserisci un numero intero positivo.")
+            except ValueError: print("Inserisci un numero intero valido.")
+
+        while True:
+            try:
+                batch_input = input(f"Batch size (default {DEFAULT_BATCH_SIZE_HF}, Invio per default): ").strip()
+                batch_size_hf_to_use = DEFAULT_BATCH_SIZE_HF if not batch_input else int(batch_input)
+                if batch_size_hf_to_use > 0: break
+                else: print("Inserisci un numero intero positivo.")
+            except ValueError: print("Inserisci un numero intero valido.")
+        print(f"Parametri scelti: Beams={num_beams_to_use}, Batch Size={batch_size_hf_to_use}")
+
         # --- Chiedi directory input (invariato) ---
         while True:
             base_input_directory = os.path.abspath(input('Inserisci directory audio originale: ').strip()) # Usa path assoluto
             if os.path.isdir(base_input_directory): break
             else: print(f"Errore: '{base_input_directory}' non è una directory valida.")
 
-        # --- Chiedi numero core per preprocessing (invariato) ---
-        default_cores = 8
+        # --- RILEVAMENTO CORE e Richiesta (MODIFICATO) ---
+        try:
+            detected_cores = os.cpu_count()
+            default_cores_prompt = f"(default: {detected_cores}, rilevato dal sistema)"
+        except NotImplementedError:
+            detected_cores = 8 # Fallback
+            default_cores_prompt = f"(default: {detected_cores}, fallback)"
+
         while True:
             try:
-                core_input = input(f"Numero di core CPU per il preprocessing dei chunk (default {default_cores}, Invio per default): ").strip()
-                num_cores_to_use = default_cores if not core_input else int(core_input)
+                # Usa la variabile aggiornata nel prompt
+                core_input = input(f"Numero di core CPU per split/preprocessing {default_cores_prompt}: ").strip()
+                num_cores_to_use = detected_cores if not core_input else int(core_input)
                 if num_cores_to_use > 0: break
                 else: print("Inserisci un numero intero positivo.")
             except ValueError: print("Inserisci un numero intero valido.")
+        print(f"Utilizzo di {num_cores_to_use} core per le fasi parallele.")
 
         # --- Definisci Percorsi Intermedi ---
         split_audio_dir = os.path.join(base_input_directory, SPLIT_FOLDER_NAME)
         preprocessed_audio_dir = os.path.join(base_input_directory, PREPROCESSED_FOLDER_NAME)
         base_output_dir = os.path.join(base_input_directory, BASE_OUTPUT_FOLDER_NAME)
+        split_manifest_path = os.path.join(split_audio_dir, splitter.SPLIT_MANIFEST_FILENAME)
 
-        # --- ESEGUI LA DIVISIONE DEI FILE ---
-        # Questa fase è sequenziale per file originale, ma non dovrebbe essere troppo lunga
-        split_manifest_path, split_manifest_content = splitter.split_large_audio_files(
-            base_input_directory,
-            split_audio_dir
-            # ,split_threshold_seconds=..., # Puoi sovrascrivere i default qui
-            # ,target_chunk_duration_seconds=...
-        )
-        if not split_manifest_path or not split_manifest_content:
-             print("\nERRORE CRITICO: Divisione dei file audio fallita o nessun file valido trovato. Impossibile continuare.")
-             allow_sleep(); sys.exit(1)
-        print("Fase di divisione/copia file completata.")
+        # --- LOGICA PER SALTARE SPLIT/COPY (NUOVO) ---
+        split_manifest_content = None
+        perform_split = True # Flag per decidere se eseguire lo split
+        if os.path.isdir(split_audio_dir) and os.path.isfile(split_manifest_path):
+            print(f"\n--- Rilevata Directory Split Esistente ({split_audio_dir}) ---")
+            print(f"--- e Manifest Esistente ({split_manifest_path}) ---")
+            while True:
+                skip_split = input("Vuoi saltare la fase di divisione/copia e usare i file esistenti? (s/n): ").strip().lower()
+                if skip_split in ['s', 'n']: break
+                else: print("Risposta non valida.")
+
+            if skip_split == 's':
+                perform_split = False # Non eseguire lo split
+                print("Salto della fase di divisione/copia. Caricamento manifest esistente...")
+                try:
+                    with open(split_manifest_path, 'r', encoding='utf-8') as f:
+                        split_manifest_content = json.load(f)
+                    print("Manifest esistente caricato con successo.")
+                    if not isinstance(split_manifest_content, dict) or 'files' not in split_manifest_content or not split_manifest_content['files']:
+                        print("ERRORE/WARN: Il manifest esistente sembra non valido o vuoto. Verrà rigenerato.")
+                        split_manifest_content = None
+                        perform_split = True # Forza riesecuzione
+                except Exception as e_load_manifest:
+                    print(f"ERRORE durante il caricamento del manifest esistente: {e_load_manifest}")
+                    print("Verrà rieseguita la fase di divisione/copia.")
+                    split_manifest_content = None
+                    perform_split = True # Forza riesecuzione
+            else:
+                print("L'utente ha scelto di rieseguire la fase di divisione/copia.")
+                perform_split = True # Assicura che venga eseguito
+
+        # --- ESEGUI SPLIT PARALLELO (solo se perform_split è True) ---
+        if perform_split:
+            print("\n--- Inizio Fase di Split/Copy Parallela ---")
+            # Passa num_cores_to_use alla funzione di split
+            split_manifest_path_new, split_manifest_content_new = splitter.split_large_audio_files(
+                base_input_directory,
+                split_audio_dir,
+                num_workers=num_cores_to_use # Passa i core scelti
+            )
+            if not split_manifest_path_new or not split_manifest_content_new:
+                 print("\nERRORE CRITICO: Divisione/Copia fallita.")
+                 allow_sleep(); sys.exit(1)
+            # Aggiorna le variabili principali se lo split è stato eseguito
+            split_manifest_path = split_manifest_path_new
+            split_manifest_content = split_manifest_content_new
+            print("Fase di divisione/copia file completata.")
+        # Ora split_manifest_path e split_manifest_content sono sicuramente popolati (o da file o da esecuzione)
 
         # --- ESEGUI PREPROCESSING PARALLELO dei CHUNK ---
         print("\n--- Inizio Fase di Preprocessing Parallelo dei Chunk ---")
@@ -373,7 +456,8 @@ if __name__ == "__main__":
              print("\nAttenzione: Nessun chunk audio trovato o processato durante il preprocessing.")
         print("Fase di preprocessing parallelo dei chunk completata.")
 
-        # Inizializza checkpoint_data per la nuova sessione
+        # --- Inizializza Checkpoint (MODIFICATO per includere parametri) ---
+        total_chunks_expected_calc = len(split_manifest_content.get('files', {})) if split_manifest_content else 0
         checkpoint_data = {
             "base_input_directory": base_input_directory,
             "split_audio_directory": split_audio_dir,
@@ -382,10 +466,11 @@ if __name__ == "__main__":
             "split_manifest_path": split_manifest_path,
             "original_model_choice": model_input,
             "models_to_process": selected_models,
-            "num_preprocessing_workers": num_cores_to_use,
-            # 'files_processed' verrà popolato durante la trascrizione
+            "num_workers_used": num_cores_to_use, # Salva core scelti
+            "num_beams": num_beams_to_use, # Salva beams scelti
+            "batch_size_hf": batch_size_hf_to_use, # Salva batch size scelto
+            "total_chunks_expected": total_chunks_expected_calc,
             "files_processed": {},
-            # 'preprocessing_output_paths' non serve più qui, basiamo tutto sul manifest
             "current_model_processing": None,
             "last_saved": None
         }
@@ -400,7 +485,7 @@ if __name__ == "__main__":
         try:
             with open(split_manifest_path, 'r', encoding='utf-8') as f:
                 split_manifest_content = json.load(f)
-            print(f"Manifest di split caricato da: {split_manifest_path}")
+            #print(f"Manifest di split caricato da: {split_manifest_path}")
         except Exception as e:
             print(f"ERRORE CRITICO: Impossibile caricare il manifest '{split_manifest_path}': {e}")
             allow_sleep(); sys.exit(1)
@@ -410,6 +495,8 @@ if __name__ == "__main__":
 
     preprocessed_audio_dir = checkpoint_data['preprocessed_audio_directory']
     base_output_dir = checkpoint_data['base_output_directory']
+    num_beams_to_use = checkpoint_data.get("num_beams", DEFAULT_NUM_BEAMS)
+    batch_size_hf_to_use = checkpoint_data.get("batch_size_hf", DEFAULT_BATCH_SIZE_HF)
 
     # --- Main Processing Loop (Trascrizione Modelli) ---
     models_to_process = list(checkpoint_data.get('models_to_process', [])) # Crea copia per iterare sicuro
@@ -418,13 +505,13 @@ if __name__ == "__main__":
          # ... (Pulizia checkpoint vuoto) ...
          allow_sleep(); sys.exit(0)
 
-    try: os.makedirs(base_output_dir, exist_ok=True); print(f"\nDirectory output base: {base_output_dir}")
+    try: os.makedirs(base_output_dir, exist_ok=True); #print(f"\nDirectory output base: {base_output_dir}")
     except OSError as e: print(f"!!! Errore creazione output base: {e}"); allow_sleep(); sys.exit(1)
 
     if torch.cuda.is_available(): print('CUDA disponibile.')
     else: print('ATTENZIONE: CUDA non disponibile.')
 
-    current_model_index = 0
+    
     processing_completed_normally = True # Assumi successo finché non fallisce
 
     try:
@@ -438,7 +525,7 @@ if __name__ == "__main__":
             save_checkpoint()
 
             model_output_dir = os.path.join(base_output_dir, current_model_folder_name)
-            try: os.makedirs(model_output_dir, exist_ok=True); print(f"Directory output modello: {model_output_dir}")
+            try: os.makedirs(model_output_dir, exist_ok=True); #print(f"Directory output modello: {model_output_dir}")
             except OSError as e:
                 print(f"!!! Errore creazione dir output per {current_model_folder_name}: {e}. Salto modello.");
                 checkpoint_data['models_to_process'].pop(0) # Rimuovi modello fallito
@@ -455,11 +542,14 @@ if __name__ == "__main__":
                 print(f"\nAvvio trascrizione chunk per '{current_model_choice_full}'...")
                 # Chiama la funzione modificata passando il manifest e la dir preprocessata
                 processed_chunk_paths_tentativi = transcribeFilesInDirectory(
-                    split_manifest_content,   # Dizionario manifest
-                    preprocessed_audio_dir,   # Dir con chunk preprocessati
+                    split_manifest_content,
+                    preprocessed_audio_dir,
                     MODEL,
                     current_model_choice_full,
-                    model_output_dir
+                    model_output_dir,
+                    # Passa i valori corretti
+                    num_beams=num_beams_to_use,
+                    batch_size_hf=batch_size_hf_to_use
                 )
 
                 # --- COMBINAZIONE (deve ricevere il manifest) ---
