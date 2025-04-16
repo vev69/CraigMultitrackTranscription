@@ -10,20 +10,57 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
     *   **OpenAI Whisper:** Leverages OpenAI's powerful Whisper models for accurate transcription. Supported sizes include [list specific supported sizes, e.g., "tiny," "base," "small," "medium," "large-v2"].
     *   **Hugging Face Optimized Whisper:** Utilizes Hugging Face's optimized versions of Whisper for potential performance improvements.
     *   **Fine-Tuned Italian Model:** A model specifically fine-tuned for Italian language transcription.
-    *   **Dual Model Transcription:**  Allows simultaneous transcription using multiple models to improve accuracy ([specify models when using this].
+    *   **Multi Model Transcription:**  Allows simultaneous transcription using multiple models to improve accuracy.
 *   **Checkpointing:** Supports resuming transcription from a checkpoint file, allowing for long audio files to be transcribed in stages.
 *   **System Standby Prevention:**  Prevents the system from going into standby mode during transcription, ensuring uninterrupted processing of long audio files (Linux only).
 *   **Speaker Separation/Combination:**  Provides functionality to separate and combine transcripts from different speakers.
-*   **Customizable:** Allows specifying language for transcription ([specify available languages]).
 *   **Error Handling:**  Includes robust error handling to gracefully manage potential issues during the transcription process.
 *   **Optimized Performance:**  Utilizes hardware acceleration (CUDA) when available for faster transcription.
-*   **File Extension Support:** Supports transcription from [list supported file types, e.g., ".mp3", ".wav", ".m4a"].
+*   **File Extension Support:** Supports transcription from [.flac, .m4a].
 
 ## Getting Started
 
-1.  **Dependencies:** Ensure you have the required dependencies installed: [List dependencies and installation instructions. E.g., Python 3.7+, ffmpeg, etc.]
-2.  **Configuration:** Configure the application with your desired settings [Provide instructions for configuration, e.g., a configuration file].
-3.  **Transcription:** Run the application with the desired audio file [Provide command-line arguments/GUI instructions].
+1.  **Dependencies:** Ensure you have the required dependencies installed:
+    *   **Python:** Python 3.9 or later is recommended.
+    *   **FFmpeg:** This is essential for audio processing libraries (`pydub`, `whisper`).
+        *   **Windows:** Download builds from [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html), extract, and add the `bin` directory to your system's PATH environment variable.
+        *   **macOS (using Homebrew):** `brew install ffmpeg`
+        *   **Linux (Debian/Ubuntu):** `sudo apt update && sudo apt install ffmpeg`
+        *   **Linux (Fedora):** `sudo dnf install ffmpeg`
+    *   **PyTorch:** Required for Whisper and Transformers. Install it following the official instructions at [https://pytorch.org/](https://pytorch.org/), selecting the correct version for your OS and CUDA (if you have an NVIDIA GPU for acceleration).
+        *Example (Check official website for current commands!):*
+        ```bash
+        # For CUDA 11.x/12.x (Verify CUDA version and command on PyTorch website!)
+        # pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+        # OR for CPU-only:
+        # pip3 install torch torchvision torchaudio
+        ```
+    *   **Python Packages:** Clone this repository, navigate into its directory, and install the necessary Python libraries (ideally within a virtual environment):
+        ```bash
+        # Clone (if you haven't already)
+        # git clone <repository-url>
+        # cd <repository-directory>
+
+        # Create and activate virtual environment (recommended)
+        # python -m venv .venv
+        # source .venv/bin/activate # Linux/macOS
+        # .\.venv\Scripts\activate # Windows
+
+        # Install packages
+        pip install -U openai-whisper transformers soundfile noisereduce pydub numpy
+        pip install -U optimum[bettertransformer] # Optional for HF optimization
+
+        # Install pydbus for Linux standby prevention (optional)
+        # pip install pydbus
+        ```
+
+2.  **Configuration:** There is no separate configuration file. All necessary options (model selection, directories, CPU cores, transcription parameters) are requested interactively when you run the main script.
+
+3.  **Transcription:** Prepare your audio files (see Usage section) and run the main script from your terminal:
+    ```bash
+    python transcribeCraigAudio.py
+    ```
+    The script will then prompt you for the required information to start the transcription process. See the **Usage** section below for more details on running the script and its workflow.
 
 ```markdown
 ## Usage
