@@ -33,6 +33,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
         *   **Linux (Fedora):** `sudo dnf install ffmpeg`
     *   **PyTorch:** Required for Whisper and Transformers. Install it following the official instructions at [https://pytorch.org/](https://pytorch.org/), selecting the correct version for your OS and CUDA (if you have an NVIDIA GPU for acceleration).
         *Example (Check official website for current commands!):*
+
         ```bash
         # For CUDA 11.x/12.x (Verify CUDA version and command on PyTorch website!)
         # pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
@@ -40,6 +41,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
         # pip3 install torch torchvision torchaudio
         ```
     *   **Python Packages:** Clone this repository, navigate into its directory, and install the necessary Python libraries (ideally within a virtual environment):
+    
         ```bash
         # Clone (if you haven't already)
         # git clone <repository-url>
