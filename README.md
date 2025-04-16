@@ -7,7 +7,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 ## Key Features
 
 *   **Multiple Transcription Models:**
-    *   **OpenAI Whisper:** Leverages OpenAI's powerful Whisper models for accurate transcription. Supported sizes include [list specific supported sizes, e.g., "tiny," "base," "small," "medium," "large-v2"].
+*   **OpenAI Whisper:** Leverages OpenAI's powerful Whisper models for accurate transcription. Supported models: `whisper-medium`, `whisper-largev2`, `whisper-largev3`.
     *   **Hugging Face Optimized Whisper:** Utilizes Hugging Face's optimized versions of Whisper for potential performance improvements.
     *   **Fine-Tuned Italian Model:** A model specifically fine-tuned for Italian language transcription.
     *   **Multi Model Transcription:**  Allows simultaneous transcription using multiple models to improve accuracy.
