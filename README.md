@@ -7,16 +7,20 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 ## Key Features
 
 *   **Multiple Transcription Models:**
-*   **OpenAI Whisper:** Leverages OpenAI's powerful Whisper models for accurate transcription. Supported models: `whisper-medium`, `whisper-largev2`, `whisper-largev3`.
-    *   **Hugging Face Optimized Whisper:** Utilizes Hugging Face's optimized versions of Whisper for potential performance improvements.
-    *   **Fine-Tuned Italian Model:** A model specifically fine-tuned for Italian language transcription.
-    *   **Multi Model Transcription:**  Allows simultaneous transcription using multiple models to improve accuracy.
-*   **Checkpointing:** Supports resuming transcription from a checkpoint file, allowing for long audio files to be transcribed in stages.
-*   **System Standby Prevention:**  Prevents the system from going into standby mode during transcription, ensuring uninterrupted processing of long audio files (Linux only).
-*   **Speaker Separation/Combination:**  Provides functionality to separate and combine transcripts from different speakers.
-*   **Error Handling:**  Includes robust error handling to gracefully manage potential issues during the transcription process.
-*   **Optimized Performance:**  Utilizes hardware acceleration (CUDA) when available for faster transcription.
-*   **File Extension Support:** Supports transcription from [.flac, .m4a].
+    *   **OpenAI Whisper:** Leverages OpenAI's powerful Whisper models. Supported: `whisper-medium`, `whisper-largev2`, `whisper-largev3`.
+    *   **Hugging Face Optimized Whisper:** Utilizes Hugging Face's optimized versions. Supported: `hf_whisper-medium`, `hf_whisper-largev2`, `hf_whisper-largev3`.
+    *   **Fine-Tuned Italian Model:** Includes `whispy/whisper_italian` via Hugging Face.
+    *   **Sequential Model Execution:** Run multiple selected models sequentially on the same audio data.
+*   **Audio Preprocessing:** Includes optional noise reduction and normalization steps applied to audio chunks before transcription.
+*   **Intelligent Chunking:** Automatically splits long audio files (> 45 minutes by default) into smaller chunks for efficient processing. Short files are processed directly. (Future improvement: splitting based on silence).
+*   **Parallel Processing:** Leverages multiple CPU cores for faster audio splitting/copying and preprocessing phases.
+*   **Asynchronous Pipeline:** Preprocessing runs in the background, allowing transcription to start as soon as the first audio chunks are ready (improves resource utilization).
+*   **Checkpointing & Resumption:** Automatically saves progress (which chunks/models are done) to `transcription_checkpoint.json`. Allows resuming interrupted sessions.
+*   **System Standby Prevention:** Prevents the system from entering sleep/standby during long processing times (Supports Windows, macOS, Linux via D-Bus).
+*   **Speaker Attribution & Combined Output:** Identifies speakers based on original filenames (e.g., `1-SpeakerName.flac`) and combines all transcribed chunks into a single, chronologically ordered text file per model, formatted as `SpeakerName: Text`. Uses an improved sorting logic to handle timestamp inaccuracies.
+*   **Robust Error Handling:** Manages common errors during transcription and file operations.
+*   **GPU Acceleration:** Utilizes CUDA (NVIDIA GPU) via PyTorch for significantly faster transcription when available.
+*   **Targeted File Format:** Specifically designed for `.flac` files as downloaded by Craig.
 
 ## Getting Started
 
