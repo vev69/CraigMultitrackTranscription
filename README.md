@@ -66,7 +66,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
     ```
     The script will then prompt you for the required information to start the transcription process. See the **Usage** section below for more details on running the script and its workflow.
 
-```markdown
+
 ## Usage
 
 1.  **Prepare Audio:** Place original `.flac` or `.m4a` files in a dedicated directory. Ensure speaker names are identifiable in filenames (e.g., `1-SpeakerName.flac`).
