@@ -88,15 +88,13 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 ```markdown
 ## Troubleshooting
 
-*   **Installation/Dependency Errors:** Ensure PyTorch (with correct CUDA version if applicable), `ffmpeg`, and all packages listed in *Getting Started* are installed correctly. Verify `ffmpeg` is in your system's PATH.
-*   **`CouldntDecodeError`:** Usually indicates an issue with `ffmpeg`. Check installation and PATH. The audio file might also be corrupted.
-*   **`WinError 32: File used by another process`:** Try closing file explorers or antivirus software accessing the output directories. The script includes delays, but persistent locks might require a system restart.
-*   **CUDA / OutOfMemoryError:** Try a smaller model size or decrease the `batch_size` parameter during the interactive prompts. Ensure your GPU drivers and PyTorch CUDA version are compatible.
-*   **Incorrect Speaker Names:** Double-check your original audio filenames match the `[number]-[SpeakerName]...` pattern.
-*   **Incorrect Transcript Order:** While improved sorting logic exists, perfect ordering is hard. Timestamp inaccuracies from the ASR model are the likely cause for remaining issues.
-*   **Preprocessing/Splitting Failures:** Check console output for specific errors from `pydub`, `noisereduce`, or `soundfile`. Ensure sufficient disk space.
-*   **General Issues:** Check the console output for specific error messages. If reporting an issue, please include the full console output and details about your environment (OS, Python version, hardware).
-*   **Further Help:** [If applicable, link to the project's GitHub Issues page or documentation]
+*   **`NameError: name 'splitter' is not defined`**: Ensure `import transcriptionUtils.splitAudio as splitter` is present at the beginning of `transcriptionUtils/preprocessAudioFiles.py`.
+*   **`WinError 32: File is being used by another process`**: This often happens on Windows during file renaming. The script includes delays to mitigate this, but ensure no other programs (like antivirus or file explorers) are locking the intermediate `.txt` files. Restarting might help clear locks.
+*   **`CouldntDecodeError` (from pydub/splitAudio.py):** Usually means `ffmpeg` is not installed correctly or not in the system's PATH. Verify your `ffmpeg` installation.
+*   **CUDA Errors / OutOfMemoryError:** Your GPU may not have enough memory for the chosen model size. Try a smaller model (e.g., `medium` instead of `large-v3`) or reduce `BATCH_SIZE_HF` in `transcriptionUtils/transcribeAudio.py` (though this is less likely the issue with current batch size). Ensure your PyTorch installation matches your CUDA version.
+*   **Incorrect Speaker Names:** Verify that your original `.flac` filenames match the expected pattern (`[number]-[SpeakerName]...`). The logic extracts the name between the first hyphen and the optional underscore suffix.
+*   **Incorrect Transcript Order:** The improved sorting logic helps, but perfect ordering with ASR timestamps is hard. Check the debug output during sorting in `combineSpeakerTexts.py` if issues persist. Consider if chunking based on silence (future enhancement) might help.
+*   **Slow Performance:** Ensure CUDA is being used (check initial script output). The splitting/preprocessing phases depend on CPU cores and disk speed. Transcription speed depends heavily on GPU (or CPU if no GPU).
 ```
 
 ## License
