@@ -71,6 +71,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 
 1.  **Prepare Audio:** Place original `.flac` or `.m4a` files in a dedicated directory. Ensure speaker names are identifiable in filenames (e.g., `1-SpeakerName.flac`).
 2.  **Run:** Execute the script from your terminal:
+
     ```bash
     python transcribeCraigAudio.py
     ```
