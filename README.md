@@ -2,8 +2,7 @@
 
 ## Overview
 
-Transcribe Multitrack audio downloaded from discord using Craig. Started from Icavitt project (https://github.com/Icavitt/CraigMultiTrackTranscription) and modified (vibe coding ) to work for Italian Language. Added an experimental alternative using hugging face model https://huggingface.co/whispy/whisper_italian
-
+Transcribe Multitrack audio downloaded from discord using Craig. Started from Icavitt project (https://github.com/Icavitt/CraigMultiTrackTranscription) and modified (vibe coding ) to work for Italian Language.
 ## Key Features
 
 *   **Multiple Transcription Models:**
@@ -41,7 +40,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
         # pip3 install torch torchvision torchaudio
         ```
     *   **Python Packages:** Clone this repository, navigate into its directory, and install the necessary Python libraries (ideally within a virtual environment):
-    
+
         ```bash
         # Clone (if you haven't already)
         # git clone <repository-url>
