@@ -96,6 +96,9 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 *   **Incorrect Transcript Order:** The improved sorting logic helps, but perfect ordering with ASR timestamps is hard. Check the debug output during sorting in `combineSpeakerTexts.py` if issues persist. Consider if chunking based on silence (future enhancement) might help.
 *   **Slow Performance:** Ensure CUDA is being used (check initial script output). The splitting/preprocessing phases depend on CPU cores and disk speed. Transcription speed depends heavily on GPU (or CPU if no GPU).
 ```
+## Contributing
+
+Please report issues
 
 ## License
 
