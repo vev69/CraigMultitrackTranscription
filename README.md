@@ -83,9 +83,8 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 4.  **Processing:** The script automatically splits/copies audio, preprocesses chunks (parallel), transcribes using selected models (GPU if available), saves progress (`transcription_checkpoint.json`), and combines results.
 5.  **Output:** Final combined transcripts (`SpeakerName: Text`) are saved in model-specific subdirectories within `transcription_output`.
 6.  **Resume:** If interrupted, re-run the script. It will detect the checkpoint and ask to resume.
-```
 
-```markdown
+
 ## Troubleshooting
 
 *   **`NameError: name 'splitter' is not defined`**: Ensure `import transcriptionUtils.splitAudio as splitter` is present at the beginning of `transcriptionUtils/preprocessAudioFiles.py`.
@@ -95,7 +94,7 @@ Transcribe Multitrack audio downloaded from discord using Craig. Started from Ic
 *   **Incorrect Speaker Names:** Verify that your original `.flac` filenames match the expected pattern (`[number]-[SpeakerName]...`). The logic extracts the name between the first hyphen and the optional underscore suffix.
 *   **Incorrect Transcript Order:** The improved sorting logic helps, but perfect ordering with ASR timestamps is hard. Check the debug output during sorting in `combineSpeakerTexts.py` if issues persist. Consider if chunking based on silence (future enhancement) might help.
 *   **Slow Performance:** Ensure CUDA is being used (check initial script output). The splitting/preprocessing phases depend on CPU cores and disk speed. Transcription speed depends heavily on GPU (or CPU if no GPU).
-```
+
 ## Contributing
 
 Please report issues
