@@ -21,7 +21,7 @@ DEFAULT_SPLIT_NAMING_THRESHOLD_SECONDS: float = 45 * 60 # Soglia durata per nome
 DEFAULT_MIN_SILENCE_LEN_MS_DYNAMIC: int = 700        # Default MINIMO per analisi dinamica
 DEFAULT_SILENCE_THRESH_DBFS_DYNAMIC: float = -35.0     # Default per analisi dinamica
 DEFAULT_KEEP_SILENCE_MS: int = 250                     # Padding silenzio (aumentato leggermente)
-DEFAULT_MAX_SILENCE_BETWEEN_MS: int = 3500             # Max silenzio da includere in un chunk (3.5s - AUMENTATO)
+DEFAULT_MAX_SILENCE_BETWEEN_MS: int = 5000             # Max silenzio da includere in un chunk (3.5s - AUMENTATO)
 DEFAULT_TARGET_MAX_CHUNK_DURATION_MS: int = 15 * 60 * 1000 # Max durata chunk (15 min - AUMENTATO)
 
 
