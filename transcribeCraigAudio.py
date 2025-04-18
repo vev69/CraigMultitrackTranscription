@@ -113,6 +113,35 @@ atexit.register(allow_sleep) # Registra la funzione di cleanup
 def signal_handler(sig, frame):
     # ... (codice invariato) ...
     print("\n*** Interruzione rilevata! Pulizia e salvataggio... ***")
+    # --- NUOVA LOGICA: Terminazione Pool ---
+    print(">>> Tentativo di terminazione dei processi worker dei pool...")
+    terminated_analysis = False
+    terminated_splitting = False
+
+    # Accedi alle variabili globali definite in splitAudio.py
+    # (Assicurati che l'import permetta l'accesso o importale direttamente)
+    try:
+        # if splitter.analysis_pool_global_ref: # Se si usa 'import splitter'
+        # Usa la versione importata direttamente se si sceglie quel metodo
+        if 'analysis_pool_global_ref' in splitter.__dict__ and splitter.analysis_pool_global_ref:
+            print("    Terminazione pool di analisi...")
+            splitter.analysis_pool_global_ref.terminate()
+            splitter.analysis_pool_global_ref.join() # Aspetta che terminino effettivamente
+            terminated_analysis = True
+            print("    Pool di analisi terminato.")
+        # if splitter.splitting_pool_global_ref: # Se si usa 'import splitter'
+        if 'splitting_pool_global_ref' in splitter.__dict__ and splitter.splitting_pool_global_ref:
+            print("    Terminazione pool di splitting...")
+            splitter.splitting_pool_global_ref.terminate()
+            splitter.splitting_pool_global_ref.join() # Aspetta
+            terminated_splitting = True
+            print("    Pool di splitting terminato.")
+    except Exception as e_term:
+        print(f"    Errore durante la terminazione dei pool: {e_term}")
+
+    if not terminated_analysis and not terminated_splitting:
+        print("    Nessun pool attivo trovato da terminare.")
+    # --- FINE NUOVA LOGICA ---
     allow_sleep()
     save_checkpoint()
     print(f"Checkpoint salvato in {CHECKPOINT_FILE}.")
