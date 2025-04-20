@@ -1,4 +1,4 @@
-# --- START OF transcriptionUtils/splitAudio.py (MODIFICATO per Raggruppamento Aggressivo) ---
+# --- START OF transcriptionUtils/splitAudio.py (MODIFICATO per Taglio Ibrido Tempo/Silenzio) ---
 
 import os
 import json
@@ -7,219 +7,246 @@ import time
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
 from pydub import AudioSegment, exceptions as pydub_exceptions # type: ignore
-from pydub.silence import detect_nonsilent, detect_silence # type: ignore
+# Importa solo detect_silence ora
+from pydub.silence import detect_silence # type: ignore
 import shutil
-import numpy as np
+# Numpy non più strettamente necessario qui, ma pydub potrebbe usarlo internamente
+# import numpy as np
 import platform
 import multiprocessing as mp
 
 SPLIT_MANIFEST_FILENAME = "split_manifest.json"
-ANALYSIS_CHUNK_MS = 50
 
-# --- PARAMETRI DI DEFAULT CONFIGURABILI (più aggressivi) ---
-DEFAULT_SPLIT_NAMING_THRESHOLD_SECONDS: float = 45 * 60 # Soglia durata per nome '_partXXX'
-DEFAULT_MIN_SILENCE_LEN_MS_DYNAMIC: int = 700        # Default MINIMO per analisi dinamica
-DEFAULT_SILENCE_THRESH_DBFS_DYNAMIC: float = -35.0     # Default per analisi dinamica
-DEFAULT_KEEP_SILENCE_MS: int = 250                     # Padding silenzio (aumentato leggermente)
-DEFAULT_MAX_SILENCE_BETWEEN_MS: int = 5000             # Max silenzio da includere in un chunk (3.5s - AUMENTATO)
-DEFAULT_TARGET_MAX_CHUNK_DURATION_MS: int = 15 * 60 * 1000 # Max durata chunk (15 min - AUMENTATO)
+# --- PARAMETRI CONFIGURABILI PER TAGLIO IBRIDO ---
+# Durata target approssimativa per ogni chunk
+TARGET_CHUNK_DURATION_SECONDS: float = 15 * 60  # 15 minuti
+# Soglia minima per considerare un file "lungo" e necessitare di splitting
+MIN_DURATION_FOR_SPLIT_SECONDS: float = TARGET_CHUNK_DURATION_SECONDS + (1 * 60) # Es: splitta solo se > 16 min
+# Parametri per trovare il punto di taglio silenzioso
+SILENCE_SEARCH_RANGE_MS: int = 10 * 1000 # Cerca silenzio in +/- 10 secondi attorno al taglio ideale
+MIN_SILENCE_LEN_FOR_CUT_MS: int = 700     # Silenzio deve essere lungo almeno 700ms per tagliare
+SILENCE_THRESH_DBFS_FOR_CUT: float = -40.0 # Soglia dBFS per considerare silenzio (può essere fissa qui)
+# Padding da mantenere attorno ai chunk tagliati
+KEEP_SILENCE_MS: int = 250
 
 
-# --- Worker Analisi Soglie (INVARIATO nel codice, ma usa nuovi default se analisi fallisce) ---
-def _analyze_audio_for_thresholds(original_path: str,
-                                  # I default passati qui sono quelli definiti sopra
-                                  default_silence_thresh_dbfs: float,
-                                  default_min_silence_len_ms: int
-                                  ) -> tuple[str, float | None, int | None]:
+# --- WORKER per Splitting Ibrido ---
+def _process_single_audio_file_hybrid_split(original_path: str,
+                                            split_audio_dir: str
+                                            ) -> tuple[dict, int, int, int]:
+    """
+    Worker per splittare un file audio usando l'approccio ibrido:
+    mira a una durata target ma taglia su un silenzio vicino.
+    Copia i file più corti della soglia minima.
+
+    Args:
+        original_path: Percorso assoluto del file audio originale.
+        split_audio_dir: Directory dove salvare i chunk/file esportati.
+
+    Returns:
+        Una tupla:
+        - dict: Voci del manifest generate per questo file (path_output -> metadata).
+        - int: Flag di successo (1 se successo, 0 se errore).
+        - int: Numero di chunk esportati (>=1 se successo).
+        - int: 0 (non usato).
+    """
     filename = os.path.basename(original_path)
-    calculated_threshold = None
-    calculated_min_len = None
-    try:
-        audio = AudioSegment.from_file(original_path)
-        if len(audio) == 0: return original_path, None, None
-        # Usa list comprehension per efficienza
-        dbfs_values = [chunk.dBFS for i in range(0, len(audio), ANALYSIS_CHUNK_MS) if len(chunk := audio[i:i+ANALYSIS_CHUNK_MS]) > 0]
-        valid_dbfs = [db for db in dbfs_values if np.isfinite(db)]
-        if not valid_dbfs:
-            calculated_threshold = default_silence_thresh_dbfs
-        else:
-            try:
-                hist, bin_edges = np.histogram(valid_dbfs, bins='auto')
-                bin_centers = bin_edges[:-1] + np.diff(bin_edges) / 2
-                noise_peak_estimate = np.percentile(valid_dbfs, 15)
-                speech_peak_estimate = np.percentile(valid_dbfs, 80)
-                noise_bin_idx = np.argmin(np.abs(bin_centers - noise_peak_estimate))
-                speech_bin_idx = np.argmin(np.abs(bin_centers - speech_peak_estimate))
-                start_idx = min(noise_bin_idx, speech_bin_idx)
-                end_idx = max(noise_bin_idx, speech_bin_idx)
-                valley_threshold = default_silence_thresh_dbfs
-                if start_idx < end_idx:
-                    try:
-                        valley_idx_rel = np.argmin(hist[start_idx:end_idx+1])
-                        valley_idx_abs = start_idx + valley_idx_rel
-                        potential_threshold = bin_edges[valley_idx_abs + 1]
-                        valley_threshold = max(-60.0, min(-15.0, potential_threshold))
-                    except (ValueError, IndexError): valley_threshold = default_silence_thresh_dbfs
-                else: valley_threshold = max(-60.0, min(-15.0, noise_peak_estimate + 10.0))
-                calculated_threshold = valley_threshold
-            except Exception: calculated_threshold = default_silence_thresh_dbfs
-        if calculated_threshold is not None:
-            try:
-                # Trova silenzi >= 100ms per l'analisi della durata
-                silence_ranges = detect_silence(audio, 100, calculated_threshold, 1)
-                silence_durations_ms = [(end - start) for start, end in silence_ranges]
-                meaningful_silences_ms = [d for d in silence_durations_ms if d >= 150]
-                if meaningful_silences_ms:
-                    potential_min_len = np.percentile(meaningful_silences_ms, 65)
-                    # Limiti più aggressivi: min 500ms, max 4000ms? Dipende molto dall'audio.
-                    # Manteniamo limiti precedenti per ora: min 250, max 2000
-                    calculated_min_len = int(max(250, min(2000, potential_min_len)))
-                else: calculated_min_len = default_min_silence_len_ms
-            except Exception: calculated_min_len = default_min_silence_len_ms
-        else: calculated_min_len = default_min_silence_len_ms
-    except Exception as e: print(f"  !!! [AnalysisWorker] ERROR analyzing {filename}: {e}")
-    return original_path, calculated_threshold, calculated_min_len
-
-
-# --- Funzione Orchestratrice Analisi (INVARIATA, passa i nuovi default) ---
-def _run_parallel_audio_analysis(original_audio_dir: str,
-                                 supported_extensions: tuple,
-                                 num_workers: int,
-                                 # Passa i default definiti a livello di modulo
-                                 default_silence_thresh_dbfs: float = DEFAULT_SILENCE_THRESH_DBFS_DYNAMIC,
-                                 default_min_silence_len_ms: int = DEFAULT_MIN_SILENCE_LEN_MS_DYNAMIC
-                                 ) -> dict[str, dict]:
-    print(f"\n--- Avvio Analisi Audio Parallela per Soglie Dinamiche (Workers: {num_workers}) ---")
-    custom_params_dict: dict[str, dict] = {}
-    original_files = sorted([f for f in os.listdir(original_audio_dir) if os.path.isfile(os.path.join(original_audio_dir, f)) and f.lower().endswith(supported_extensions)])
-    if not original_files: return custom_params_dict
-    start_method = 'spawn' if platform.system() != 'Linux' else None
-    context = mp.get_context(start_method)
-    with context.Pool(processes=num_workers) as pool:
-        # Passa i default globali al worker
-        tasks_args = [(os.path.abspath(os.path.join(original_audio_dir, filename)), default_silence_thresh_dbfs, default_min_silence_len_ms) for filename in original_files]
-        analysis_results = []
-        try:
-            analysis_results = pool.starmap(_analyze_audio_for_thresholds, tasks_args)
-            print(f"Completata analisi preliminare per {len(analysis_results)} file.")
-        except Exception as pool_error: print(f"!!! Errore durante l'esecuzione del Pool di Analisi: {pool_error}"); return custom_params_dict
-        # Popola il dizionario usando i default come fallback
-        for original_path, calc_thresh, calc_min_len in analysis_results:
-            custom_params_dict[original_path] = {'threshold': calc_thresh if calc_thresh is not None else default_silence_thresh_dbfs, 'min_len': calc_min_len if calc_min_len is not None else default_min_silence_len_ms}
-    print("--- Fine Analisi Audio Parallela ---")
-    return custom_params_dict
-
-
-# --- Worker Splitting (INVARIATO nella logica, usa parametri passati) ---
-def _process_single_audio_file_for_split(original_path: str,
-                                         split_audio_dir: str,
-                                         silence_thresh_dbfs: float,
-                                         min_silence_len_ms: int,
-                                         keep_silence_ms: int,
-                                         split_naming_threshold_seconds: float,
-                                         max_silence_between_ms: int,
-                                         target_max_chunk_duration_ms: int
-                                         ) -> tuple[dict, int, int, int]:
-    filename = os.path.basename(original_path)
+    print(f"  [SplitWorkerHybrid {os.getpid()}] Processing: {filename}")
     file_manifest_entries = {}
     chunks_exported_count = 0
     success_flag = 0
+
     try:
         base_name, ext = os.path.splitext(filename)
         audio = AudioSegment.from_file(original_path)
-        duration_seconds = len(audio) / 1000.0
-        if duration_seconds == 0: raise ValueError("Audio file is empty.")
+        duration_ms = len(audio)
+        duration_seconds = duration_ms / 1000.0
+        print(f"  [SplitWorkerHybrid {os.getpid()}] Duration: {duration_seconds:.2f}s")
 
-        nonsilent_ranges = detect_nonsilent(audio, min_silence_len=min_silence_len_ms, silence_thresh=silence_thresh_dbfs, seek_step=1)
-        if not nonsilent_ranges: return {}, 0, 0, 0
+        if duration_seconds <= MIN_DURATION_FOR_SPLIT_SECONDS:
+            # File corto: copia/esporta come singolo file
+            print(f"  [SplitWorkerHybrid {os.getpid()}] File is short. Exporting as single chunk.")
+            output_filename = f"{base_name}{ext}" # Nome originale
+            output_path = os.path.abspath(os.path.join(split_audio_dir, output_filename))
 
-        print(f"  [SplitWorker {os.getpid()}] Found {len(nonsilent_ranges)} raw non-silent ranges for {filename}. Grouping (MaxSilence={max_silence_between_ms}ms, MaxDur={target_max_chunk_duration_ms/1000/60:.1f}min)...")
-        grouped_ranges = []
-        if nonsilent_ranges: # Assicurati che non sia vuoto
-            current_group_start, current_group_end = nonsilent_ranges[0]
-            current_group_duration = current_group_end - current_group_start
+            if not os.path.exists(output_path):
+                 try: audio.export(output_path, format=ext.lstrip('.'))
+                 except Exception as export_err: print(f"  !!! ERROR exporting short file {output_filename}: {export_err}"); raise # Rilancia errore per bloccare questo file
 
-            for i in range(len(nonsilent_ranges) - 1):
-                silence_between = nonsilent_ranges[i+1][0] - nonsilent_ranges[i][1]
-                next_segment_duration = nonsilent_ranges[i+1][1] - nonsilent_ranges[i+1][0]
+            file_manifest_entries[output_path] = {
+                "original_file": original_path, "is_chunk": False, "chunk_index": 0,
+                "start_time_abs": 0.0, "end_time_abs": duration_seconds,
+                "original_duration_seconds": duration_seconds
+            }
+            chunks_exported_count = 1
+            success_flag = 1
 
-                # Verifica se aggiungere il prossimo segmento è possibile
-                if silence_between < max_silence_between_ms and \
-                   (current_group_duration + silence_between + next_segment_duration) <= target_max_chunk_duration_ms:
-                    current_group_end = nonsilent_ranges[i+1][1]
-                    current_group_duration = current_group_end - current_group_start
+        else:
+            # File lungo: splitta in modo ibrido
+            target_chunk_duration_ms = int(TARGET_CHUNK_DURATION_SECONDS * 1000)
+            num_ideal_chunks = math.ceil(duration_ms / target_chunk_duration_ms)
+            print(f"  [SplitWorkerHybrid {os.getpid()}] File is long. Aiming for ~{num_ideal_chunks} chunks of ~{TARGET_CHUNK_DURATION_SECONDS/60:.1f} min.")
+
+            cut_points_ms = [0] # Inizia sempre da 0
+            last_cut_ms = 0
+
+            for i in range(1, num_ideal_chunks):
+                ideal_cut_point_ms = i * target_chunk_duration_ms
+
+                # Definisci l'intervallo di ricerca attorno al punto di taglio ideale
+                search_start_ms = max(last_cut_ms + MIN_SILENCE_LEN_FOR_CUT_MS, # Non cercare prima dell'ultimo taglio
+                                     ideal_cut_point_ms - SILENCE_SEARCH_RANGE_MS)
+                search_end_ms = min(duration_ms - MIN_SILENCE_LEN_FOR_CUT_MS, # Non cercare troppo vicino alla fine
+                                    ideal_cut_point_ms + SILENCE_SEARCH_RANGE_MS)
+
+                if search_start_ms >= search_end_ms:
+                    # Intervallo di ricerca non valido, usa il taglio ideale (meno ottimale)
+                    actual_cut_point_ms = ideal_cut_point_ms
+                    print(f"    WARN: Invalid search range around {ideal_cut_point_ms/1000:.1f}s. Using ideal cut.")
                 else:
-                    grouped_ranges.append((current_group_start, current_group_end))
-                    current_group_start, current_group_end = nonsilent_ranges[i+1]
-                    current_group_duration = current_group_end - current_group_start
-            grouped_ranges.append((current_group_start, current_group_end)) # Aggiungi l'ultimo gruppo
+                    # Cerca silenzi nell'intervallo definito
+                    audio_slice_for_search = audio[search_start_ms:search_end_ms]
+                    silences = detect_silence(
+                        audio_slice_for_search,
+                        min_silence_len=MIN_SILENCE_LEN_FOR_CUT_MS,
+                        silence_thresh=SILENCE_THRESH_DBFS_FOR_CUT,
+                        seek_step=1
+                    )
 
-        print(f"  [SplitWorker {os.getpid()}] Grouped into {len(grouped_ranges)} final chunks for {filename}.")
+                    if silences:
+                        # Trovato almeno un silenzio valido! Scegli il migliore.
+                        # Opzione 1: Scegli il centro del silenzio più lungo
+                        # Opzione 2: Scegli il centro del silenzio più vicino al taglio ideale
+                        best_silence_center_ms = -1
+                        min_dist_to_ideal = float('inf')
 
-        chunks_exported_count = 0
-        is_considered_long = duration_seconds > split_naming_threshold_seconds
+                        for silence_start_rel, silence_end_rel in silences:
+                             silence_center_rel = silence_start_rel + (silence_end_rel - silence_start_rel) / 2
+                             # Converte il centro relativo in assoluto (rispetto all'inizio dell'audio)
+                             silence_center_abs = search_start_ms + silence_center_rel
+                             dist = abs(silence_center_abs - ideal_cut_point_ms)
+                             if dist < min_dist_to_ideal:
+                                 min_dist_to_ideal = dist
+                                 best_silence_center_ms = int(silence_center_abs)
 
-        for i, (start_ms, end_ms) in enumerate(grouped_ranges):
-             padded_start_ms = max(0, start_ms - keep_silence_ms)
-             padded_end_ms = min(len(audio), end_ms + keep_silence_ms)
-             if padded_start_ms >= padded_end_ms: continue
-             chunk = audio[padded_start_ms:padded_end_ms]
+                        actual_cut_point_ms = best_silence_center_ms
+                        print(f"    Found silence near {ideal_cut_point_ms/1000:.1f}s. Cutting at {actual_cut_point_ms/1000:.1f}s.")
+                    else:
+                        # Nessun silenzio valido trovato nell'intervallo, usa il taglio ideale
+                        actual_cut_point_ms = ideal_cut_point_ms
+                        print(f"    No suitable silence found near {ideal_cut_point_ms/1000:.1f}s. Using ideal cut.")
 
-             if is_considered_long or len(grouped_ranges) > 1:
-                  chunk_filename = f"{base_name}_part{i:03d}{ext}"
-                  is_chunk_flag = True; chunk_index = i
-             else:
-                  chunk_filename = f"{base_name}{ext}"
-                  is_chunk_flag = False; chunk_index = 0
+                # Assicurati che il punto di taglio non sia troppo vicino al precedente
+                if actual_cut_point_ms <= last_cut_ms + 1000: # Minimo 1 secondo tra tagli?
+                    print(f"    WARN: Calculated cut point {actual_cut_point_ms/1000:.1f}s too close to previous {last_cut_ms/1000:.1f}s. Adjusting.")
+                    actual_cut_point_ms = last_cut_ms + target_chunk_duration_ms # Forza avanzamento
+                    # Assicura non superi la durata totale
+                    actual_cut_point_ms = min(duration_ms - 1000, actual_cut_point_ms) # Lascia almeno 1s alla fine
 
-             chunk_output_path = os.path.abspath(os.path.join(split_audio_dir, chunk_filename))
-             start_time_abs = padded_start_ms / 1000.0
-             end_time_abs = padded_end_ms / 1000.0
 
-             if not os.path.exists(chunk_output_path):
-                 try: chunk.export(chunk_output_path, format=ext.lstrip('.'))
-                 except Exception as export_err: print(f"  !!! ERROR exporting {chunk_filename}: {export_err}"); continue
+                # Aggiungi punto di taglio e aggiorna l'ultimo taglio
+                # Arrotonda all'intero per lo slicing
+                actual_cut_point_ms = int(round(actual_cut_point_ms))
+                if actual_cut_point_ms > last_cut_ms: # Assicura avanzamento
+                     cut_points_ms.append(actual_cut_point_ms)
+                     last_cut_ms = actual_cut_point_ms
+                else:
+                    print(f"    ERROR: Failed to advance cut point for chunk {i+1}. Stopping split for this file.")
+                    break # Esce dal loop for i
 
-             file_manifest_entries[chunk_output_path] = {
-                 "original_file": original_path, "is_chunk": is_chunk_flag, "chunk_index": chunk_index,
-                 "start_time_abs": start_time_abs, "end_time_abs": end_time_abs,
-                 "original_duration_seconds": duration_seconds
-             }
-             chunks_exported_count += 1
-        if chunks_exported_count > 0: success_flag = 1
+            # Aggiungi il punto finale (fine dell'audio)
+            cut_points_ms.append(duration_ms)
 
-    except Exception as e: print(f"  !!! [SplitWorker {os.getpid()}] ERROR processing {filename}: {e}"); import traceback; traceback.print_exc()
+            print(f"  [SplitWorkerHybrid {os.getpid()}] Final cut points (ms): {cut_points_ms}")
+
+            # --- Esporta i chunk basati sui punti di taglio calcolati ---
+            chunks_exported_count = 0
+            for i in range(len(cut_points_ms) - 1):
+                 start_ms = cut_points_ms[i]
+                 end_ms = cut_points_ms[i+1]
+
+                 # Applica padding (ma senza sovrapporre i chunk!)
+                 padded_start_ms = max(0, start_ms - KEEP_SILENCE_MS)
+                 padded_end_ms = min(duration_ms, end_ms + KEEP_SILENCE_MS)
+
+                 # Assicura che i chunk con padding non si sovrappongano troppo
+                 # Se non è il primo chunk, assicurati che il suo inizio paddato
+                 # non sia *prima* della *fine non paddata* del chunk precedente.
+                 if i > 0:
+                      previous_end_ms = cut_points_ms[i]
+                      padded_start_ms = max(padded_start_ms, previous_end_ms)
+
+                 # Se non è l'ultimo chunk, assicurati che la sua fine paddata
+                 # non sia *dopo* l'*inizio non paddato* del chunk successivo.
+                 if i < len(cut_points_ms) - 2:
+                     next_start_ms = cut_points_ms[i+1]
+                     padded_end_ms = min(padded_end_ms, next_start_ms)
+
+
+                 if padded_start_ms >= padded_end_ms: continue # Salta chunk non valido
+
+                 chunk = audio[padded_start_ms:padded_end_ms]
+                 chunk_filename = f"{base_name}_part{i:03d}{ext}"
+                 chunk_output_path = os.path.abspath(os.path.join(split_audio_dir, chunk_filename))
+                 start_time_abs = padded_start_ms / 1000.0
+                 end_time_abs = padded_end_ms / 1000.0
+
+                 if not os.path.exists(chunk_output_path):
+                     try:
+                         # print(f"    Exporting: {chunk_filename} [{start_time_abs:.2f}s - {end_time_abs:.2f}s]") # Verboso
+                         chunk.export(chunk_output_path, format=ext.lstrip('.'))
+                     except Exception as export_err:
+                          print(f"  !!! ERROR exporting {chunk_filename}: {export_err}. Skipping chunk.")
+                          continue
+
+                 file_manifest_entries[chunk_output_path] = {
+                     "original_file": original_path, "is_chunk": True, "chunk_index": i,
+                     "start_time_abs": start_time_abs, "end_time_abs": end_time_abs,
+                     "original_duration_seconds": duration_seconds
+                 }
+                 chunks_exported_count += 1
+
+            if chunks_exported_count > 0: success_flag = 1
+
+    # --- Gestione Errori (invariata) ---
+    except pydub_exceptions.CouldntDecodeError as e: print(f"  !!! ERROR decoding {filename}: {e}. Skipping.")
+    except FileNotFoundError: print(f"  !!! ERROR File not found: {original_path}. Skipping.")
+    except ValueError as ve: print(f"  !!! ERROR processing {filename}: {ve}. Skipping.")
+    except Exception as e:
+        print(f"  !!! UNEXPECTED ERROR processing {filename}: {e}")
+        import traceback; traceback.print_exc()
 
     return file_manifest_entries, success_flag, chunks_exported_count, 0
 
 
-# --- Funzione Principale (MODIFICATA per usare i nuovi default) ---
+# --- Funzione Principale (MODIFICATA per usare worker ibrido) ---
 def split_large_audio_files(original_audio_dir: str,
                             split_audio_dir: str,
                             # Usa i default definiti all'inizio
-                            split_naming_threshold_seconds: float = DEFAULT_SPLIT_NAMING_THRESHOLD_SECONDS,
-                            default_min_silence_len_ms: int = DEFAULT_MIN_SILENCE_LEN_MS_DYNAMIC,
-                            default_silence_thresh_dbfs: float = DEFAULT_SILENCE_THRESH_DBFS_DYNAMIC,
-                            keep_silence_ms: int = DEFAULT_KEEP_SILENCE_MS,
-                            max_silence_between_ms: int = DEFAULT_MAX_SILENCE_BETWEEN_MS,
-                            target_max_chunk_duration_ms: int = DEFAULT_TARGET_MAX_CHUNK_DURATION_MS,
+                            target_chunk_duration_seconds: float = TARGET_CHUNK_DURATION_SECONDS,
+                            min_duration_for_split_seconds: float = MIN_DURATION_FOR_SPLIT_SECONDS,
+                            silence_search_range_ms: int = SILENCE_SEARCH_RANGE_MS,
+                            min_silence_len_for_cut_ms: int = MIN_SILENCE_LEN_FOR_CUT_MS,
+                            silence_thresh_dbfs_for_cut: float = SILENCE_THRESH_DBFS_FOR_CUT,
+                            keep_silence_ms: int = KEEP_SILENCE_MS,
                             supported_extensions=(".flac",".m4a"),
                             num_workers: int | None = None
                             ) -> tuple[str | None, dict]:
     """
-    Esegue pipeline di splitting: analisi dinamica soglie, poi splitting/raggruppamento.
+    Esegue splitting ibrido (tempo target + taglio su silenzio vicino) in parallelo
+    e crea un manifest JSON.
     """
-    # Stampa i valori EFFETTIVI che verranno usati (i default o quelli passati)
-    print(f"\n--- Avvio Pipeline di Splitting Parallelo (con Raggruppamento Aggressivo) ---")
+    # Stampa i parametri EFFETTIVI che verranno usati
+    print(f"\n--- Avvio Pipeline di Splitting Parallelo (Ibrido Tempo/Silenzio) ---")
     print(f"Directory originale: {original_audio_dir}")
     print(f"Directory output (split): {split_audio_dir}")
-    print(f"Soglia durata per nome '_partXXX': {split_naming_threshold_seconds / 60:.1f} minuti")
-    print(f"Parametri Silenzio di Default/Fallback: min_len={default_min_silence_len_ms}ms, threshold={default_silence_thresh_dbfs}dBFS")
+    print(f"Durata Target Chunk: ~{target_chunk_duration_seconds / 60:.1f} minuti")
+    print(f"Split solo se originale > {min_duration_for_split_seconds / 60:.1f} minuti")
+    print(f"Ricerca Silenzio per Taglio: Range=+/-{silence_search_range_ms/1000}s, MinLen={min_silence_len_for_cut_ms}ms, Thresh={silence_thresh_dbfs_for_cut}dBFS")
     print(f"Padding Silenzio: keep_silence={keep_silence_ms}ms")
-    print(f"Parametri Raggruppamento: max_silence_between={max_silence_between_ms}ms, max_chunk_duration={target_max_chunk_duration_ms / 1000 / 60:.1f}min")
     print(f"Estensioni supportate: {supported_extensions}")
 
-    # ... (Logica num_workers, check dir, creazione dir principale) ...
+    # Logica num_workers, check dir, creazione dir principale (invariata)
     if num_workers is None:
         try: num_workers = os.cpu_count(); num_workers = 4 if num_workers is None else num_workers
         except NotImplementedError: num_workers = 4
@@ -228,22 +255,19 @@ def split_large_audio_files(original_audio_dir: str,
     try: os.makedirs(split_audio_dir, exist_ok=True)
     except OSError as e: print(f"Errore creazione directory split: {e}"); return None, {}
 
-    # --- FASE 1: Analisi Parallela (Passa i default globali) ---
-    custom_params_dict = _run_parallel_audio_analysis(
-        original_audio_dir, supported_extensions, num_workers,
-        default_silence_thresh_dbfs, default_min_silence_len_ms # Passa i default
-    )
+    # NON serve più l'analisi preliminare
+    # custom_params_dict = _run_parallel_audio_analysis(...)
 
-    # --- FASE 2: Splitting/Copia Parallela (Passa parametri specifici e di raggruppamento) ---
-    print(f"\n--- Avvio Splitting/Copia/Raggruppamento Parallelo (Workers: {num_workers}) ---")
+    # --- FASE UNICA: Splitting/Copia Ibrida Parallela ---
+    print(f"\n--- Avvio Splitting/Copia Ibrida Parallela (Workers: {num_workers}) ---")
     split_manifest = {
-        "split_method": "silence_detection_dynamic_threshold_aggressively_grouped", # Nuovo nome metodo
-        "default_min_silence_len_ms": default_min_silence_len_ms,
-        "default_silence_thresh_dbfs": default_silence_thresh_dbfs,
+        "split_method": "hybrid_time_silence", # Nuovo metodo
+        "target_chunk_duration_seconds": target_chunk_duration_seconds,
+        "min_duration_for_split_seconds": min_duration_for_split_seconds,
+        "silence_search_range_ms": silence_search_range_ms,
+        "min_silence_len_for_cut_ms": min_silence_len_for_cut_ms,
+        "silence_thresh_dbfs_for_cut": silence_thresh_dbfs_for_cut,
         "keep_silence_ms": keep_silence_ms,
-        "split_naming_threshold_seconds": split_naming_threshold_seconds,
-        "max_silence_between_ms": max_silence_between_ms,
-        "target_max_chunk_duration_ms": target_max_chunk_duration_ms,
         "files": {}
     }
     manifest_path = os.path.join(split_audio_dir, SPLIT_MANIFEST_FILENAME)
@@ -251,28 +275,33 @@ def split_large_audio_files(original_audio_dir: str,
     total_chunks_exported = 0
     total_errors = 0
 
-    original_files = sorted(custom_params_dict.keys())
+    original_files = sorted([
+        f for f in os.listdir(original_audio_dir)
+        if os.path.isfile(os.path.join(original_audio_dir, f)) and f.lower().endswith(supported_extensions)
+    ])
     if not original_files: return None, {}
 
+    # Setup Pool
     start_method = 'spawn' if platform.system() != 'Linux' else None
     context = mp.get_context(start_method)
     with context.Pool(processes=num_workers) as pool:
-        tasks_args = []
-        for original_path in original_files:
-            params = custom_params_dict[original_path] # Recupera soglie dinamiche
-            tasks_args.append(
-                (original_path, split_audio_dir,
-                 params['threshold'], params['min_len'], # Soglie dinamiche
-                 keep_silence_ms, split_naming_threshold_seconds, # Parametri globali
-                 max_silence_between_ms, target_max_chunk_duration_ms # PARAMETRI RAGGRUPPAMENTO
-                 )
-            )
+        # Prepara argomenti per il worker ibrido
+        tasks_args = [
+            (os.path.abspath(os.path.join(original_audio_dir, filename)),
+             split_audio_dir)
+            for filename in original_files
+        ]
+
         split_results = []
         try:
-            split_results = pool.starmap(_process_single_audio_file_for_split, tasks_args)
-            print(f"\nCompletati {len(split_results)} task di splitting/copy/grouping dalla pool.")
-        except Exception as pool_error: print(f"!!! Errore Pool Splitting: {pool_error}"); return None, {}
+            # Usa starmap (passa tuple di argomenti)
+            split_results = pool.starmap(_process_single_audio_file_hybrid_split, tasks_args)
+            print(f"\nCompletati {len(split_results)} task di splitting/copy dalla pool.")
+        except Exception as pool_error:
+             print(f"!!! Errore durante l'esecuzione del Pool di Splitting: {pool_error}")
+             return None, {}
 
+        # Processa i risultati
         for result_tuple in split_results:
             try:
                 file_manifest_entries, success_flag, chunks_exported, _ = result_tuple
@@ -280,13 +309,16 @@ def split_large_audio_files(original_audio_dir: str,
                     total_files_processed_success += 1
                     split_manifest["files"].update(file_manifest_entries)
                     total_chunks_exported += chunks_exported
-                else: total_errors += 1
-            except Exception as e: total_errors += 1; print(f"!!! Errore processando risultato split: {e}")
+                else:
+                    total_errors += 1
+            except Exception as e:
+                total_errors += 1
+                print(f"!!! Errore processando risultato task splitting: {e}")
 
     # --- Riepilogo Finale ---
-    print(f"\n--- Pipeline di Splitting (Raggruppamento Aggressivo) Completata ---")
+    print(f"\n--- Pipeline di Splitting Ibrido Completata ---")
     print(f"File originali processati: {total_files_processed_success} (con errori: {total_errors})")
-    print(f"  - Totale chunk finali esportati: {total_chunks_exported}")
+    print(f"  - Totale chunk finali esportati: {total_chunks_exported}") # Questo numero dovrebbe essere molto più basso ora
     print(f"Totale voci nel manifest: {len(split_manifest['files'])}")
 
     if not split_manifest["files"]: return None, {}
@@ -298,4 +330,5 @@ def split_large_audio_files(original_audio_dir: str,
         return manifest_path, split_manifest
     except Exception as e: print(f"!!! Errore salvataggio manifest: {e}"); return None, {}
 
-# --- END OF transcriptionUtils/splitAudio.py (MODIFICATO per Raggruppamento Aggressivo) ---
+
+# --- END OF transcriptionUtils/splitAudio.py (MODIFICATO per Taglio Ibrido Tempo/Silenzio) ---
