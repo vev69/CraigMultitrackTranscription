@@ -19,9 +19,9 @@ SPLIT_MANIFEST_FILENAME = "split_manifest.json"
 
 # --- PARAMETRI CONFIGURABILI PER TAGLIO IBRIDO ---
 # Durata target approssimativa per ogni chunk
-TARGET_CHUNK_DURATION_SECONDS: float = 15 * 60  # 15 minuti
+TARGET_CHUNK_DURATION_SECONDS: float = 10 * 60  # 10 minuti
 # Soglia minima per considerare un file "lungo" e necessitare di splitting
-MIN_DURATION_FOR_SPLIT_SECONDS: float = TARGET_CHUNK_DURATION_SECONDS + (1 * 60) # Es: splitta solo se > 16 min
+MIN_DURATION_FOR_SPLIT_SECONDS: float = TARGET_CHUNK_DURATION_SECONDS + (1 * 60) # Es: splitta solo se > 11 min
 # Parametri per trovare il punto di taglio silenzioso
 SILENCE_SEARCH_RANGE_MS: int = 10 * 1000 # Cerca silenzio in +/- 10 secondi attorno al taglio ideale
 MIN_SILENCE_LEN_FOR_CUT_MS: int = 700     # Silenzio deve essere lungo almeno 700ms per tagliare
