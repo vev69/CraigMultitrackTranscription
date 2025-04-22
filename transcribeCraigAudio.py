@@ -461,11 +461,11 @@ if __name__ == "__main__":
             # FASE 2: PREPROCESSING
             # Recupera il target LUFS calcolato e salvato nel manifest
             effective_target_lufs = split_manifest_content.get("effective_target_lufs_for_norm", splitter.FALLBACK_TARGET_LUFS)
-
+            print("\n--- Inizio Fase di Preprocessing Parallelo dei Chunk (con Boost Selettivo via Manifest) ---")
             success_count, failure_count, valid_preprocessed_paths = preprocessor.run_parallel_preprocessing(
                 input_chunk_dir=split_audio_dir, preprocessed_output_dir=preprocessed_audio_dir,
                 num_workers=num_cores_to_use, manifest_path=split_manifest_path,
-                target_avg_dbfs=effective_target_lufs, # Usa target LUFS calcolato
+                #target_avg_dbfs=effective_target_lufs, # Usa target LUFS calcolato
                 boost_threshold_db=BOOST_THRESHOLD_DB,
                 supported_extensions=SUPPORTED_FILE_EXTENSIONS )
             if success_count == 0 and failure_count > 0: print("\nERRORE: Nessun chunk preprocessato."); allow_sleep(); sys.exit(1)
