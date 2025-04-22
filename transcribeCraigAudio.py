@@ -8,11 +8,19 @@ import transcriptionUtils.transcribeAudio as transcribe
 import transcriptionUtils.combineSpeakerTexts as combineSpeakers
 import transcriptionUtils.preprocessAudioFiles as preprocessor
 import transcriptionUtils.splitAudio as splitter
+# Importa riferimenti globali per signal handler
+try: from transcriptionUtils.preprocessAudioFiles import preprocessing_pool_global_ref
+except ImportError: preprocessing_pool_global_ref = None
+try: from transcriptionUtils.splitAudio import analysis_pool_global_ref, splitting_pool_global_ref
+except ImportError: analysis_pool_global_ref = None; splitting_pool_global_ref = None
 import torch # type: ignore
 import shutil
 import platform
 import time
 import atexit
+import multiprocessing as mp
+import traceback
+
 
 # --- Moduli specifici per OS per prevenire lo standby (invariati) ---
 try:
@@ -47,6 +55,10 @@ BASE_OUTPUT_FOLDER_NAME = "transcription_output"
 # NUOVE COSTANTI PER LE DIRECTORY INTERMEDIE
 SPLIT_FOLDER_NAME = "audio_split" # Cartella per audio diviso/copiato
 PREPROCESSED_FOLDER_NAME = "audio_preprocessed_chunks" # Cartella per chunk processati
+
+# --- Valori di Default Parametri ---
+DEFAULT_NUM_BEAMS = 1; DEFAULT_BATCH_SIZE_HF = 16
+TARGET_AVG_DBFS = -18.0; BOOST_THRESHOLD_DB = 6
 
 # Global variable for checkpointing
 checkpoint_data = {}
@@ -109,43 +121,19 @@ def allow_sleep():
 
 atexit.register(allow_sleep) # Registra la funzione di cleanup
 
-# --- Gestione Segnali (invariata) ---
+# --- Gestione Segnali (Termina Pool) ---
 def signal_handler(sig, frame):
-    # ... (codice invariato) ...
-    print("\n*** Interruzione rilevata! Pulizia e salvataggio... ***")
-    # --- NUOVA LOGICA: Terminazione Pool ---
-    print(">>> Tentativo di terminazione dei processi worker dei pool...")
-    terminated_analysis = False
-    terminated_splitting = False
-
-    # Accedi alle variabili globali definite in splitAudio.py
-    # (Assicurati che l'import permetta l'accesso o importale direttamente)
-    try:
-        # if splitter.analysis_pool_global_ref: # Se si usa 'import splitter'
-        # Usa la versione importata direttamente se si sceglie quel metodo
-        if 'analysis_pool_global_ref' in splitter.__dict__ and splitter.analysis_pool_global_ref:
-            print("    Terminazione pool di analisi...")
-            splitter.analysis_pool_global_ref.terminate()
-            splitter.analysis_pool_global_ref.join() # Aspetta che terminino effettivamente
-            terminated_analysis = True
-            print("    Pool di analisi terminato.")
-        # if splitter.splitting_pool_global_ref: # Se si usa 'import splitter'
-        if 'splitting_pool_global_ref' in splitter.__dict__ and splitter.splitting_pool_global_ref:
-            print("    Terminazione pool di splitting...")
-            splitter.splitting_pool_global_ref.terminate()
-            splitter.splitting_pool_global_ref.join() # Aspetta
-            terminated_splitting = True
-            print("    Pool di splitting terminato.")
-    except Exception as e_term:
-        print(f"    Errore durante la terminazione dei pool: {e_term}")
-
-    if not terminated_analysis and not terminated_splitting:
-        print("    Nessun pool attivo trovato da terminare.")
-    # --- FINE NUOVA LOGICA ---
-    allow_sleep()
-    save_checkpoint()
-    print(f"Checkpoint salvato in {CHECKPOINT_FILE}.")
-    sys.exit(0)
+    print("\n*** Interruzione rilevata! Pulizia... ***")
+    print(">>> Terminazione Pool...")
+    pools_terminated = 0
+    pools_to_check = {"Analisi": analysis_pool_global_ref, "Splitting": splitting_pool_global_ref, "Preprocessing": preprocessing_pool_global_ref}
+    for name, pool_ref in pools_to_check.items():
+        if pool_ref is not None: # ... (logica terminate/join pool) ...
+             print(f"    Terminating pool '{name}'...")
+             try: pool_ref.terminate(); pool_ref.join(timeout=5); pools_terminated += 1
+             except Exception as e: print(f"    Error terminating pool '{name}': {e}")
+    if pools_terminated == 0: print("    Nessun pool attivo.")
+    allow_sleep(); save_checkpoint(); print("Checkpoint salvato. Uscita."); os._exit(1)
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -270,7 +258,10 @@ def transcribeFilesInDirectory(split_manifest: dict,
 # ============================================================================
 
 if __name__ == "__main__":
-
+    try:
+        if platform.system() != "Linux": mp.set_start_method('spawn', force=True)
+    except RuntimeError: pass # Già impostato
+    except AttributeError: pass # Vecchio Python
     prevent_sleep()
 
     # --- Variabili per i parametri (NUOVO) ---
@@ -473,9 +464,12 @@ if __name__ == "__main__":
         # --- ESEGUI PREPROCESSING PARALLELO dei CHUNK ---
         print("\n--- Inizio Fase di Preprocessing Parallelo dei Chunk ---")
         success_count, failure_count, valid_preprocessed_paths = preprocessor.run_parallel_preprocessing(
-            split_audio_dir, # Input: directory con i chunk
-            preprocessed_audio_dir, # Output: directory per chunk preprocessati
+            input_chunk_dir=split_audio_dir, # Input: directory con i chunk
+            preprocessed_output_dir=preprocessed_audio_dir, # Output: directory per chunk preprocessati
             num_workers=num_cores_to_use,
+            manifest_path=split_manifest_path,# Passa path manifest
+            target_avg_dbfs=TARGET_AVG_DBFS,     # Passa target
+            boost_threshold_db=BOOST_THRESHOLD_DB,# Passa soglia boost
             supported_extensions=SUPPORTED_FILE_EXTENSIONS # Estensione dei chunk (es .flac)
         )
         if success_count == 0 and failure_count > 0 :
@@ -504,6 +498,8 @@ if __name__ == "__main__":
             "last_saved": None
         }
         print("Dati nuova sessione inizializzati nel checkpoint.")
+        checkpoint_data['num_beams'] = num_beams_to_use # Salva parametri scelti
+        checkpoint_data['batch_size_hf'] = batch_size_hf_to_use
         save_checkpoint() # Salva lo stato dopo split e preprocessing
 
     # --- Setup Generale post-input/checkpoint ---
@@ -620,7 +616,7 @@ if __name__ == "__main__":
         else: # Se è uscito per un break da errore
              processing_completed_normally = False
 
-
+    except KeyboardInterrupt: print("\nInterruzione manuale..."); processing_completed_normally = False
     except Exception as e_outer_loop:
          print(f"\n!!! Errore IRRECUPERABILE nel ciclo di elaborazione principale: {e_outer_loop}")
          import traceback; traceback.print_exc()

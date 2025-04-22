@@ -8,6 +8,7 @@ import re
 import traceback
 import time # Per pause potenziali
 import numpy as np # type: ignore # Necessario per noisereduce
+from pydub import AudioSegment, exceptions as pydub_exceptions
 
 # --- Import per preprocessing ---
 try:
@@ -42,142 +43,65 @@ except ImportError:
     print("Modulo Optimum BetterTransformer non trovato (pip install optimum[\"bettertransformer\"]).")
     OPTIMUM_AVAILABLE = False
 
-# --- NUOVA FUNZIONE DI PREPROCESSING ---
-def preprocess_audio(input_path: str, output_path: str, noise_reduce=True, normalize=True, target_dbfs=-3.0):
-    """
-    Applica riduzione rumore (opzionale) e normalizzazione (opzionale) all'audio.
-    Salva il risultato in output_path.
-    Ritorna True se il processing ha avuto successo, False altrimenti.
-    """
-    print(f"Preprocessing audio: {os.path.basename(input_path)} -> {os.path.basename(output_path)}")
-    processing_done = False
-
-    # --- Riduzione Rumore (con noisereduce) ---
-    if noise_reduce and SOUNDFILE_AVAILABLE and NOISEREDUCE_AVAILABLE:
-        try:
-            data, rate = sf.read(input_path)
-            print(f"  Audio caricato ({data.shape}, rate={rate}Hz). Applicazione riduzione rumore...")
-
-            # Converti in mono se necessario (noisereduce lavora meglio su mono)
-            if data.ndim > 1 and data.shape[1] > 1:
-                 print("  Conversione audio in mono...")
-                 data = np.mean(data, axis=1)
-
-            # Applica riduzione rumore (stima rumore dall'intero clip)
-            # Parametri da aggiustare: prop_decrease, n_fft, hop_length etc.
-            reduced_noise_data = nr.reduce_noise(y=data, sr=rate, stationary=False, prop_decrease=0.85)
-            print("  Riduzione rumore applicata.")
-            # Sovrascrivi i dati originali con quelli puliti per il passo successivo
-            data_to_process = reduced_noise_data
-            rate_to_process = rate
-            processing_done = True # Segna che almeno un passo è stato fatto
-            # Nota: non salviamo qui, passiamo i dati al passo successivo o al salvataggio finale
-
-        except Exception as e_nr:
-            print(f"  ERRORE durante riduzione rumore: {e_nr}. Si procederà con l'audio originale.")
-            # Se fallisce, usa i dati originali per la normalizzazione (se richiesta)
+# --- Funzione di Preprocessing (Implementa Boost/NR condizionale) ---
+def preprocess_audio(input_path: str, output_path: str,
+                     noise_reduce=True, normalize=True,
+                     original_avg_dbfs: float | None = None,
+                     target_avg_dbfs: float = -18.0,
+                     boost_threshold_db: float = 6.0,
+                     nr_prop_decrease_normal: float = 0.85,
+                     nr_prop_decrease_boosted: float = 0.95,
+                     target_peak_dbfs: float = -3.0):
+    filename = os.path.basename(input_path); processing_done = False
+    try:
+        audio = AudioSegment.from_file(input_path)
+        if len(audio) == 0: return False
+        # Boost Condizionale
+        gain_to_apply = 0.0; apply_stronger_nr = False
+        if original_avg_dbfs is not None and np.isfinite(original_avg_dbfs) and \
+           original_avg_dbfs < (target_avg_dbfs - boost_threshold_db):
+            gain_to_apply = min(target_avg_dbfs - original_avg_dbfs, 24.0) # Limita boost
+            print(f"  Applying +{gain_to_apply:.1f}dB boost to {filename} (orig avg: {original_avg_dbfs:.1f}dBFS)")
+            try: audio = audio + gain_to_apply; apply_stronger_nr = True; processing_done = True
+            except Exception as boost_err: print(f"  WARN: Failed boost: {boost_err}")
+        # Conversione a NumPy Float32
+        if audio.channels > 1: audio = audio.set_channels(1)
+        samples = np.array(audio.get_array_of_samples()).astype(np.float32)
+        if audio.sample_width == 1: samples /= (1 << 7)
+        elif audio.sample_width == 2: samples /= (1 << 15)
+        elif audio.sample_width == 3: samples /= (1 << 23)
+        elif audio.sample_width == 4: samples /= (1 << 31)
+        else: print(f"ERROR: Unsupp. sample width {audio.sample_width}"); return False
+        rate = audio.frame_rate; data_to_process = samples
+        # Noise Reduction Condizionale
+        if noise_reduce and NOISEREDUCE_AVAILABLE:
+            nr_prop = nr_prop_decrease_boosted if apply_stronger_nr else nr_prop_decrease_normal
+            # print(f"  Applying NR (prop={nr_prop:.2f})") # Meno verboso
             try:
-                data_to_process, rate_to_process = sf.read(input_path)
-                if data_to_process.ndim > 1 and data_to_process.shape[1] > 1: # Assicura mono se letto ora
-                     data_to_process = np.mean(data_to_process, axis=1)
-            except Exception as e_read_fallback:
-                 print(f"  ERRORE lettura audio originale dopo fallimento NR: {e_read_fallback}")
-                 return False # Fallimento grave
-
-    else:
-        # Se la riduzione rumore non è richiesta o non disponibile, leggi i dati originali
-        # ma preparali per la normalizzazione
-        if normalize and (SOUNDFILE_AVAILABLE or PYDUB_AVAILABLE):
-             try:
-                 data_to_process, rate_to_process = sf.read(input_path)
-                 if data_to_process.ndim > 1 and data_to_process.shape[1] > 1:
-                      data_to_process = np.mean(data_to_process, axis=1)
-             except Exception as e_read_orig:
-                  print(f"  ERRORE lettura audio originale per normalizzazione: {e_read_orig}")
-                  return False
-        else:
-             # Nessun processing richiesto/possibile, non serve leggere/scrivere
-             print("  Nessun preprocessing audio eseguito (skip noise reduction e/o normalization).")
-             # Potremmo copiare il file originale, ma è più efficiente non farlo
-             # e usare direttamente l'originale nella trascrizione.
-             # Indichiamo che non serve usare il file di output.
-             return False # Indica che l'output_path non contiene dati processati
-
-
-    # --- Normalizzazione (con Pydub - più robusto per diversi formati/tipi) ---
-    # Usiamo Pydub qui perché gestisce meglio la conversione tipi e il salvataggio
-    audio_processed_further = False
-    if normalize and PYDUB_AVAILABLE:
-        temp_input_for_pydub = None
-        try:
-            # Se abbiamo processato con noisereduce, dobbiamo salvare un file temporaneo
-            # perché pydub preferisce leggere da file.
-            if processing_done: # processing_done è True solo se noisereduce ha funzionato
-                temp_input_for_pydub = output_path + ".nr_temp.wav" # Usa wav per compatibilità
-                print(f"  Salvataggio temporaneo audio con riduzione rumore per normalizzazione: {os.path.basename(temp_input_for_pydub)}")
-                sf.write(temp_input_for_pydub, data_to_process, rate_to_process)
-                input_file_pydub = temp_input_for_pydub
-            else:
-                # Altrimenti normalizza direttamente l'originale
-                input_file_pydub = input_path
-
-            print(f"  Normalizzazione audio (target {target_dbfs} dBFS)...")
-            audio = AudioSegment.from_file(input_file_pydub)
-            normalized_audio = audio.apply_gain(target_dbfs - audio.dBFS)
-            # Salva il file normalizzato nel percorso di output finale
-            # Usa un formato lossless come FLAC o WAV di alta qualità
-            normalized_audio.export(output_path, format="flac")
-            print(f"  Audio normalizzato salvato in: {os.path.basename(output_path)}")
-            audio_processed_further = True # Indica che abbiamo scritto in output_path
-
-        except CouldntDecodeError as e_pydub_decode:
-             print(f"  ERRORE Pydub: Impossibile decodificare {os.path.basename(input_file_pydub)} - {e_pydub_decode}")
-             print("  Potrebbe mancare ffmpeg? (Installalo e assicurati sia nel PATH)")
-             # Se la normalizzazione fallisce ma la riduzione rumore era stata fatta,
-             # salva almeno il risultato della riduzione rumore.
-             if processing_done and not audio_processed_further:
-                  try:
-                       print(f"  Salvataggio fallback: solo riduzione rumore in {os.path.basename(output_path)}")
-                       sf.write(output_path, data_to_process, rate_to_process, format='FLAC')
-                       audio_processed_further = True
-                  except Exception as e_save_fallback:
-                       print(f"  ERRORE salvataggio fallback: {e_save_fallback}")
-                       return False # Fallimento
-             else:
-                  return False # Fallimento se non si può né normalizzare né salvare NR
-
-        except Exception as e_norm:
-            print(f"  ERRORE durante normalizzazione: {e_norm}")
-            # Come sopra, salva almeno NR se possibile
-            if processing_done and not audio_processed_further:
-                 try:
-                      print(f"  Salvataggio fallback: solo riduzione rumore in {os.path.basename(output_path)}")
-                      sf.write(output_path, data_to_process, rate_to_process, format='FLAC')
-                      audio_processed_further = True
-                 except Exception as e_save_fallback:
-                      print(f"  ERRORE salvataggio fallback: {e_save_fallback}")
-                      return False
-            else:
-                 return False
-        finally:
-             # Rimuovi il file temporaneo di noisereduce se creato
-             if temp_input_for_pydub and os.path.exists(temp_input_for_pydub):
-                  try: os.remove(temp_input_for_pydub)
-                  except OSError: pass
-
-    elif processing_done and not audio_processed_further:
-         # Se la riduzione rumore è stata fatta ma la normalizzazione no (o non disponibile)
-         # dobbiamo salvare il risultato di NR nel file di output finale.
-         try:
-              print(f"  Salvataggio audio solo con riduzione rumore in: {os.path.basename(output_path)}")
-              sf.write(output_path, data_to_process, rate_to_process, format='FLAC')
-              audio_processed_further = True
-         except Exception as e_save_nr_only:
-              print(f"  ERRORE durante salvataggio audio solo con NR: {e_save_nr_only}")
-              return False
-
-    # Ritorna True solo se abbiamo effettivamente scritto un file processato in output_path
-    return audio_processed_further
+                reduced = nr.reduce_noise(y=data_to_process, sr=rate, stationary=False, prop_decrease=nr_prop)
+                if reduced is not None and len(reduced) > 0: data_to_process = reduced; processing_done = True
+                else: print(f"  WARN: NR produced empty output for {filename}.")
+            except Exception as e_nr: print(f"  WARN: NR failed: {e_nr}")
+        elif noise_reduce: print(f"  WARN: Noisereduce lib missing for {filename}.")
+        # Normalizzazione Finale
+        if normalize:
+            peak = np.max(np.abs(data_to_process)); target_amp = 10**(target_peak_dbfs / 20.0)
+            if peak > 1e-6: # Evita /0
+                 current_peak_dbfs = 20 * np.log10(peak)
+                 if current_peak_dbfs > (target_peak_dbfs - 20): # Non boostare troppo se già silenzioso
+                      gain = target_amp / peak; normalized = np.clip(data_to_process * gain, -1.0, 1.0)
+                      if not np.allclose(data_to_process, normalized, atol=1e-4): processing_done = True
+                      data_to_process = normalized
+        # Salvataggio (SOLO se modificato)
+        if processing_done:
+             if SOUNDFILE_AVAILABLE:
+                 try: sf.write(output_path, data_to_process, rate, format='FLAC', subtype='PCM_16'); return True
+                 except Exception as e: print(f"!!! ERROR saving {output_path}: {e}")
+             else: print(f"ERROR: SoundFile missing, cannot save {output_path}")
+        else: # print(f"  Skipping save for {filename} (no processing needed).") # Meno verboso
+             return False # Indica che non è stato salvato (o non serviva)
+    except Exception as e: print(f"!!! ERROR in preprocess_audio for {filename}: {e}"); traceback.print_exc()
+    return False
 
 
 # Funzione per caricare il modello selezionato (MODIFICATA per large-v2)

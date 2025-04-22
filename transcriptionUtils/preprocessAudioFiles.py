@@ -2,124 +2,112 @@
 
 import os
 import time
+import json # Per caricare manifest
 import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
 import transcriptionUtils.transcribeAudio as transcribe
 import transcriptionUtils.splitAudio as splitter
+import multiprocessing as mp
+import platform # Per start_method
 
-# --- Funzione Worker _preprocess_worker (INVARIATA NELLA LOGICA INTERNA) ---
-def _preprocess_worker(input_path: str, output_path: str) -> tuple[str | None, bool]:
-    # ... (codice del worker invariato, chiama sempre transcribe.preprocess_audio) ...
-    filename = os.path.basename(input_path)
-    print(f"  [Worker {os.getpid()}] Starting preprocessing for: {filename}")
-    start_time = time.time()
-    success = False
-    try:
-        if os.path.exists(output_path):
-            print(f"  [Worker {os.getpid()}] Skipping: {filename} (already preprocessed).")
-            success = True
-        else:
-            # Assicurarsi che la directory di output esista per questo worker
-            # Potrebbe essere necessario se i worker scrivono in sotto-directory diverse
-            # Ma in questo caso scrivono tutti nella stessa preprocessed_output_dir
-            # os.makedirs(os.path.dirname(output_path), exist_ok=True) # Opzionale
-            success = transcribe.preprocess_audio(input_path, output_path,
-                                                  noise_reduce=True,
-                                                  normalize=True)
-            if success:
-                print(f"  [Worker {os.getpid()}] SUCCESS preprocessing for: {filename} (Output: {os.path.basename(output_path)})")
-            else:
-                print(f"  [Worker {os.getpid()}] FAILED or SKIPPED preprocessing for: {filename}")
-    except Exception as e:
-        print(f"!!! [Worker {os.getpid()}] CRITICAL ERROR preprocessing {filename}: {e}")
-        success = False
-    end_time = time.time()
-    print(f"  [Worker {os.getpid()}] Finished preprocessing for: {filename} in {end_time - start_time:.2f}s (Success: {success})")
-    return output_path if success and os.path.exists(output_path) else None, success
+# Variabile globale per cache manifest per processo worker
+manifest_data_cache = None
+manifest_path_cache = None
 
-
-# --- Funzione run_parallel_preprocessing MODIFICATA leggermente per chiarezza input/output ---
-def run_parallel_preprocessing(input_chunk_dir: str, # Input sono i chunk
-                               preprocessed_output_dir: str, # Output per chunk processati
-                               num_workers: int,
-                               supported_extensions=(".flac",)
-                               ) -> tuple[int, int, list[str]]:
-    """
-    Esegue il preprocessing sui file chunk in parallelo.
-
-    Args:
-        input_chunk_dir: Directory contenente i file audio divisi (chunk).
-        preprocessed_output_dir: Directory dove salvare i chunk preprocessati.
-        num_workers: Numero di processi worker.
-        supported_extensions: Tuple di estensioni file da processare.
-
-    Returns:
-        Tupla: (success_count, failure_count, list_of_valid_preprocessed_chunk_paths).
-    """
-    print(f"\n--- Avvio Preprocessing Parallelo dei Chunk (Workers: {num_workers}) ---")
-    print(f"Input directory (chunks): {input_chunk_dir}")
-    print(f"Output directory (preprocessed chunks): {preprocessed_output_dir}")
-
-    if not os.path.isdir(input_chunk_dir):
-        print(f"Errore: Directory input chunk non trovata: {input_chunk_dir}")
-        return 0, 0, []
+# --- Funzione Worker (Legge manifest e passa avg_dbfs) ---
+def _preprocess_worker(input_chunk_path: str,
+                       output_chunk_path: str,
+                       manifest_path: str,
+                       target_avg_dbfs: float,
+                       boost_threshold_db: float
+                       ) -> tuple[str | None, bool]:
+    global manifest_data_cache, manifest_path_cache
+    filename = os.path.basename(input_chunk_path)
+    success = False; output_file_generated = None; original_avg_dbfs = None
 
     try:
-        os.makedirs(preprocessed_output_dir, exist_ok=True)
-    except OSError as e:
-        print(f"Errore creazione directory preprocessato: {e}")
-        return 0, 0, []
-
-    # Trova i file chunk da processare
-    files_to_process = [
-        f for f in os.listdir(input_chunk_dir)
-        # Escludi il file manifest stesso!
-        if os.path.isfile(os.path.join(input_chunk_dir, f)) and \
-           f.lower().endswith(supported_extensions) and \
-           f != splitter.SPLIT_MANIFEST_FILENAME # Usa la costante dal modulo splitAudio
-    ]
-
-    if not files_to_process:
-        print("Nessun file chunk con estensioni supportate trovato nella directory di input.")
-        return 0, 0, []
-
-    print(f"Trovati {len(files_to_process)} file chunk da preprocessare.")
-
-    success_count = 0
-    failure_count = 0
-    output_file_paths = [] # Lista per percorsi chunk *preprocessati* validi
-
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {}
-        for filename in sorted(files_to_process):
-            input_path = os.path.join(input_chunk_dir, filename)
-            output_path = os.path.join(preprocessed_output_dir, filename) # Salva con lo stesso nome chunk
-            future = executor.submit(_preprocess_worker, input_path, output_path)
-            futures[future] = filename
-
-        print(f"Sottomessi {len(futures)} task di preprocessing chunk...")
-
-        processed_count = 0
-        for future in concurrent.futures.as_completed(futures):
-            filename = futures[future]
-            processed_count += 1
+        # Carica Manifest (con cache)
+        if manifest_data_cache is None or manifest_path_cache != manifest_path:
             try:
-                output_file_path, success = future.result()
-                if success:
-                    success_count += 1
-                    if output_file_path:
-                        output_file_paths.append(output_file_path)
-                else:
-                    failure_count += 1
-            except Exception as e:
-                print(f"!!! Errore ottenendo risultato per chunk {filename}: {e}")
-                failure_count += 1
+                with open(manifest_path, 'r', encoding='utf-8') as f: manifest_data_cache = json.load(f)
+                manifest_path_cache = manifest_path
+                if not manifest_data_cache or 'files' not in manifest_data_cache:
+                     print(f"  [PreprocWorker] ERROR: Manifest invalido {manifest_path}"); manifest_data_cache = None
+            except Exception as e: print(f"  !!! [PreprocWorker] ERROR loading manifest {manifest_path}: {e}"); manifest_data_cache = None
 
+        # Recupera original_avg_dbfs
+        if manifest_data_cache:
+            abs_input_chunk_path = os.path.abspath(input_chunk_path)
+            chunk_metadata = manifest_data_cache['files'].get(abs_input_chunk_path)
+            if chunk_metadata: original_avg_dbfs = chunk_metadata.get('original_avg_dbfs') # Può essere None o -999.0
+            # else: print(f"  WARN: Metadata not found for {abs_input_chunk_path}") # Meno verboso
+
+        # Esegui Preprocessing
+        if os.path.exists(output_chunk_path):
+            success = True; output_file_generated = output_chunk_path
+        else:
+            success = transcribe.preprocess_audio(
+                input_path=input_chunk_path, output_path=output_chunk_path,
+                noise_reduce=True, normalize=True,
+                original_avg_dbfs=original_avg_dbfs, # Passa il valore (può essere None)
+                target_avg_dbfs=target_avg_dbfs,
+                boost_threshold_db=boost_threshold_db )
+            if success and os.path.exists(output_chunk_path): output_file_generated = output_chunk_path
+
+    except Exception as e: print(f"!!! [PreprocWorker] CRITICAL ERROR preprocessing {filename}: {e}"); import traceback; traceback.print_exc(); success = False
+
+    return output_file_generated if success else None, success
+
+# --- Funzione Principale (Passa path manifest e target) ---
+def run_parallel_preprocessing(input_chunk_dir: str, preprocessed_output_dir: str, num_workers: int,
+                               manifest_path: str, target_avg_dbfs: float, boost_threshold_db: float,
+                               supported_extensions: tuple) -> tuple[int, int, list[str]]:
+    print(f"\n--- Avvio Preprocessing Parallelo dei Chunk (con Boost Selettivo) ---")
+    # ... (Stampa parametri, check dirs...) ...
+    if not os.path.isdir(input_chunk_dir): return 0, 0, []
+    if not os.path.isfile(manifest_path): print(f"ERRORE: Manifest non trovato: {manifest_path}"); return 0, 0, []
+    try: os.makedirs(preprocessed_output_dir, exist_ok=True)
+    except OSError as e: print(f"Errore dir preprocessato: {e}"); return 0, 0, []
+
+    files_to_process = [ f for f in os.listdir(input_chunk_dir) if os.path.isfile(os.path.join(input_chunk_dir, f)) and f.lower().endswith(supported_extensions) and f != splitter.SPLIT_MANIFEST_FILENAME ]
+    if not files_to_process: print("Nessun chunk da preprocessare."); return 0, 0, []
+    print(f"Trovati {len(files_to_process)} chunk da preprocessare.")
+
+    success_count = 0; failure_count = 0; output_file_paths = []
+    start_method = 'spawn' if platform.system() != 'Linux' else None
+    context = mp.get_context(start_method)
+    global preprocessing_pool_global_ref; preprocessing_pool_global_ref = None
+    pool_error_occurred = False
+
+    try:
+        with context.Pool(processes=num_workers) as pool:
+            preprocessing_pool_global_ref = pool
+            tasks_args = [
+                (os.path.join(input_chunk_dir, filename), os.path.join(preprocessed_output_dir, filename),
+                 manifest_path, target_avg_dbfs, boost_threshold_db)
+                for filename in files_to_process ]
+            results = []
+            try: results = pool.starmap(_preprocess_worker, tasks_args); print(f"Completati {len(results)} task preprocessing.")
+            except Exception as pool_error: pool_error_occurred = True; print(f"!!! Errore Pool Preprocessing: {pool_error}")
+
+            if not pool_error_occurred:
+                for result_tuple in results:
+                    try:
+                        output_file_path, success = result_tuple
+                        if success: success_count += 1;
+                        if success and output_file_path: output_file_paths.append(output_file_path)
+                        elif not success: failure_count += 1
+                    except Exception as e: failure_count += 1; print(f"!!! Errore processando risultato preproc: {e}")
+    finally: preprocessing_pool_global_ref = None
+
+    if pool_error_occurred: print("Preprocessing terminato con errori gravi nel pool.") # Non ritorna success/failure counts accurati
     print(f"\n--- Preprocessing Parallelo Chunk Completato ---")
-    print(f"Chunk processati/skippati con successo: {success_count}")
-    print(f"Chunk falliti: {failure_count}")
-    print(f"Percorsi chunk preprocessati validi generati: {len(output_file_paths)}")
-
+    print(f"Chunk processati/skippati: {success_count} (falliti: {failure_count})")
+    print(f"Percorsi chunk preprocessati validi: {len(output_file_paths)}")
     return success_count, failure_count, sorted(output_file_paths)
+
+# Riferimento globale per signal handler
+preprocessing_pool_global_ref = None
+
 
 # --- END OF transcriptionUtils/preprocessAudioFiles.py (MODIFICATO) ---
