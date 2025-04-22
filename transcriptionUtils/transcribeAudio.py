@@ -1,147 +1,145 @@
-# --- START OF transcriptionUtils/transcribeAudio.py ---
+# --- START OF transcriptionUtils/transcribeAudio.py (CORRETTO - Preprocessing Adattivo LUFS/SNR) ---
 import whisper # type: ignore
-from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor, GenerationConfig
+from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor, GenerationConfig # type: ignore
 import torch # type: ignore
-import sys
-import os
-import re
-import traceback
-import time # Per pause potenziali
-import numpy as np # type: ignore # Necessario per noisereduce
-from pydub import AudioSegment, exceptions as pydub_exceptions
+import sys, os, re, traceback, time
+import numpy as np
+from pydub import AudioSegment, exceptions as pydub_exceptions # type: ignore
+try: import noisereduce as nr; NOISEREDUCE_AVAILABLE = True # type: ignore
+except ImportError: NOISEREDUCE_AVAILABLE = False
+try: import soundfile as sf; SOUNDFILE_AVAILABLE = True # type: ignore
+except ImportError: SOUNDFILE_AVAILABLE = False; print("WARN: SoundFile non trovato!")
+try: from optimum.bettertransformer import BetterTransformer; OPTIMUM_AVAILABLE = True # type: ignore
+except ImportError: OPTIMUM_AVAILABLE = False
+# Importa Pyloudnorm se disponibile
+try: import pyloudnorm as pyln; PYLOUDNORM_AVAILABLE = True # type: ignore
+except ImportError: PYLOUDNORM_AVAILABLE = False
 
-# --- Import per preprocessing ---
-try:
-    import soundfile as sf # type: ignore
-    import noisereduce as nr # type: ignore
-    SOUNDFILE_AVAILABLE = True
-    NOISEREDUCE_AVAILABLE = True
-    print("Moduli soundfile e noisereduce importati per preprocessing.")
-except ImportError as e:
-    print(f"ATTENZIONE: Modulo mancante per preprocessing ({e}). La riduzione del rumore non verrà eseguita.")
-    SOUNDFILE_AVAILABLE = False
-    NOISEREDUCE_AVAILABLE = False
-
-try:
-    from pydub import AudioSegment # type: ignore
-    from pydub.exceptions import CouldntDecodeError # type: ignore
-    PYDUB_AVAILABLE = True
-    print("Modulo pydub importato per normalizzazione.")
-except ImportError:
-    print("ATTENZIONE: Modulo pydub non trovato (pip install pydub). La normalizzazione non verrà eseguita.")
-    PYDUB_AVAILABLE = False
-# -----------------------------
-# Valori default per parametri funzione
-DEFAULT_NUM_BEAMS_TA = 1
-DEFAULT_BATCH_SIZE_HF_TA = 16
-
-try:
-    from optimum.bettertransformer import BetterTransformer # type: ignore
-    OPTIMUM_AVAILABLE = True
-    print("Modulo Optimum BetterTransformer importato.")
-except ImportError:
-    print("Modulo Optimum BetterTransformer non trovato (pip install optimum[\"bettertransformer\"]).")
-    OPTIMUM_AVAILABLE = False
-
-# --- Funzione di Preprocessing (MODIFICATA per Normalizzazione RMS e NR più dolce) ---
+# --- Funzione di Preprocessing (MODIFICATA per logica adattiva LUFS/SNR) ---
 def preprocess_audio(input_path: str, output_path: str,
                      noise_reduce=True, normalize=True,
-                     # Parametri per boost/NR condizionale
-                     original_avg_dbfs: float | None = None,
-                     target_avg_dbfs: float = -18.0, # Target RMS dBFS
-                     boost_threshold_db: float = 6.0,
-                     # Parametri NR più conservativi
-                     nr_prop_decrease_normal: float = 0.80, # Ridotto da 0.85
-                     nr_prop_decrease_boosted: float = 0.90, # Ridotto da 0.95
-                     # Rimuovi target_peak_dbfs, useremo RMS
-                     # target_peak_dbfs: float = -3.0,
-                     # Aggiungi un limite di sicurezza per il clipping finale
-                     final_clip_limit_dbfs: float = -0.5): # Limita picco finale a -0.5dBFS
-    """
-    Applica boost condizionale, riduzione rumore (più conservativa),
-    e normalizzazione RMS finale con clipping di sicurezza.
-    """
-    filename = os.path.basename(input_path); processing_done = False
+                     # Riceve dict metriche originali e target LUFS
+                     original_metrics: dict | None = None,
+                     target_norm_lufs: float = -19.0, # Target Loudness finale
+                     boost_threshold_db: float = 6.0, # Soglia per decidere se boostare (rispetto a target LUFS)
+                     # Parametri NR
+                     nr_prop_decrease_low_snr: float = 0.90, # NR per audio rumoroso boostato
+                     nr_prop_decrease_mid_snr: float = 0.80, # NR per audio medio o silenzioso boostato
+                     nr_prop_decrease_high_snr: float = 0.70,# NR leggera per audio già buono
+                     # Soglia SNR per decidere NR
+                     low_snr_threshold_db: float = 35.0,
+                     high_snr_threshold_db: float = 50.0,
+                     # Limite boost iniziale e clipping finale
+                     max_initial_boost_db: float = 15.0,
+                     final_clip_limit_dbfs: float = -0.5):
+    filename = os.path.basename(input_path); processing_done = False; apply_nr = False; nr_prop = nr_prop_decrease_normal = nr_prop_decrease_high_snr # Default NR leggera
+
     try:
         audio = AudioSegment.from_file(input_path)
         if len(audio) == 0: return False
 
-        # --- Boost Condizionale (invariato) ---
-        gain_to_apply = 0.0; apply_stronger_nr = False
-        if original_avg_dbfs is not None and np.isfinite(original_avg_dbfs) and \
-           original_avg_dbfs < (target_avg_dbfs - boost_threshold_db):
-            gain_to_apply = min(target_avg_dbfs - original_avg_dbfs, 24.0)
-            print(f"  Applying +{gain_to_apply:.1f}dB boost to {filename} (orig avg: {original_avg_dbfs:.1f}dBFS)")
-            try: audio = audio + gain_to_apply; apply_stronger_nr = True; processing_done = True
+        # Estrai metriche originali se disponibili
+        original_lufs = None; original_snr = None
+        if original_metrics:
+             original_lufs = original_metrics.get('loudness_lufs')
+             original_snr = original_metrics.get('original_snr') # Assicurati sia 'original_snr' nel manifest
+
+        # --- Logica Adattiva Boost e NR ---
+        gain_to_apply = 0.0
+        if normalize and original_lufs is not None and np.isfinite(original_lufs):
+            if original_lufs < (target_norm_lufs - boost_threshold_db):
+                # Audio silenzioso -> Applica Boost Limitato
+                gain_to_apply = min(target_norm_lufs - original_lufs, max_initial_boost_db)
+                apply_nr = True # Applica NR dopo boost
+                if original_snr is not None and np.isfinite(original_snr):
+                    if original_snr < low_snr_threshold_db: # Silenzioso E Rumoroso
+                        print(f"  Boost + Strong NR ({nr_prop_decrease_low_snr:.2f}) for {filename} (Loud={original_lufs:.1f} LUFS, SNR={original_snr:.1f}dB)")
+                        nr_prop = nr_prop_decrease_low_snr
+                    else: # Silenzioso ma Pulito/Medio
+                        print(f"  Boost + Mid NR ({nr_prop_decrease_mid_snr:.2f}) for {filename} (Loud={original_lufs:.1f} LUFS, SNR={original_snr:.1f}dB)")
+                        nr_prop = nr_prop_decrease_mid_snr
+                else: # SNR non disponibile, usa NR media per sicurezza
+                    print(f"  Boost + Mid NR ({nr_prop_decrease_mid_snr:.2f}) for {filename} (Loud={original_lufs:.1f} LUFS, SNR=N/A)")
+                    nr_prop = nr_prop_decrease_mid_snr
+            elif original_snr is not None and original_snr < high_snr_threshold_db:
+                # Volume OK ma Rumoroso -> Applica NR leggera/standard
+                print(f"  Standard NR ({nr_prop_decrease_normal:.2f}) for {filename} (Loud={original_lufs:.1f} LUFS, SNR={original_snr:.1f}dB)")
+                apply_nr = True
+                nr_prop = nr_prop_decrease_normal
+            else:
+                # Volume OK e Pulito -> Probabilmente non serve NR
+                print(f"  Skipping NR for {filename} (Loud={original_lufs:.1f} LUFS, SNR={original_snr if original_snr else 'N/A'}dB)")
+                apply_nr = False
+        else:
+            # Metriche originali non disponibili -> Applica NR standard per sicurezza? O no?
+            print(f"  WARN: Original metrics missing for {filename}. Applying standard NR.")
+            apply_nr = True # Applica NR standard come fallback
+            nr_prop = nr_prop_decrease_normal
+
+
+        # Applica Boost se calcolato
+        if gain_to_apply > 0:
+            try: audio = audio + gain_to_apply; processing_done = True
             except Exception as boost_err: print(f"  WARN: Failed boost: {boost_err}")
 
-        # --- Conversione a NumPy Float32 (invariata) ---
+        # Converti a NumPy Float32
         if audio.channels > 1: audio = audio.set_channels(1)
         samples = np.array(audio.get_array_of_samples()).astype(np.float32)
-        if audio.sample_width == 1: samples /= (1 << 7)
-        elif audio.sample_width == 2: samples /= (1 << 15)
-        elif audio.sample_width == 3: samples /= (1 << 23)
-        elif audio.sample_width == 4: samples /= (1 << 31)
-        else: print(f"ERROR: Unsupp. sample width {audio.sample_width}"); return False
+        norm_factor = 1 << (audio.sample_width * 8 - 1); samples /= norm_factor
         rate = audio.frame_rate; data_to_process = samples
 
-        # --- Riduzione Rumore Condizionale (con parametri più conservativi) ---
-        if noise_reduce and NOISEREDUCE_AVAILABLE:
-            nr_prop = nr_prop_decrease_boosted if apply_stronger_nr else nr_prop_decrease_normal
-            # print(f"  Applying NR (prop={nr_prop:.2f})") # Meno verboso
+        # Applica Noise Reduction selezionata
+        if noise_reduce and apply_nr and NOISEREDUCE_AVAILABLE:
             try:
                 reduced = nr.reduce_noise(y=data_to_process, sr=rate, stationary=False, prop_decrease=nr_prop)
                 if reduced is not None and len(reduced) > 0:
-                    # Verifica se NR ha cambiato i dati
-                    if not np.allclose(data_to_process, reduced, atol=1e-5):
-                         processing_done = True
+                    if not np.allclose(data_to_process, reduced, atol=1e-5): processing_done = True
                     data_to_process = reduced
-                else: print(f"  WARN: NR produced empty output for {filename}.")
-            except Exception as e_nr: print(f"  WARN: NR failed: {e_nr}")
-        elif noise_reduce: print(f"  WARN: Noisereduce lib missing for {filename}.")
+            except Exception as e_nr: print(f"  WARN: NR failed for {filename}: {e_nr}")
+        elif noise_reduce and apply_nr: print(f"  WARN: Noisereduce lib missing for {filename}.")
 
-        # --- NUOVA Normalizzazione: Basata su RMS/dBFS medio target ---
-        if normalize:
-            # Calcola dBFS RMS dei dati correnti
-            # Evita log(0) per segmenti silenziosi
-            rms_amplitude = np.sqrt(np.mean(np.square(data_to_process)))
-            if rms_amplitude > 1e-9: # Se non è praticamente silenzio digitale
-                current_rms_dbfs = 20 * np.log10(rms_amplitude)
-                gain_needed_db = target_avg_dbfs - current_rms_dbfs
-                # Applica guadagno per raggiungere target_avg_dbfs
-                gain_factor = 10**(gain_needed_db / 20.0)
-                normalized_data = data_to_process * gain_factor
-                # Verifica se la normalizzazione ha cambiato i dati
-                if not np.allclose(data_to_process, normalized_data, atol=1e-4):
-                    processing_done = True
-                data_to_process = normalized_data
-                # print(f"  Applied RMS normalization to {target_avg_dbfs} dBFS (CurrentRMS={current_rms_dbfs:.1f}, Gain={gain_needed_db:.1f}dB)") # Meno verboso
-            # else: print("  Skipping RMS normalization (near silent).") # Meno verboso
+        # --- Normalizzazione Finale a Target LUFS (se Pyloudnorm disponibile) ---
+        if normalize and PYLOUDNORM_AVAILABLE:
+            try:
+                meter = pyln.Meter(rate)
+                current_lufs = meter.integrated_loudness(data_to_process)
+                if np.isfinite(current_lufs):
+                    gain_db = target_norm_lufs - current_lufs
+                    # Limita guadagno eccessivo anche qui? Forse non necessario se boost iniziale è limitato.
+                    # gain_db = min(gain_db, 12.0) # Limite opzionale
+                    gain_factor = 10**(gain_db / 20.0)
+                    normalized_data = data_to_process * gain_factor
+                    if not np.allclose(data_to_process, normalized_data, atol=1e-4): processing_done = True
+                    data_to_process = normalized_data
+                    # print(f"  Normalized to {target_norm_lufs:.1f} LUFS (Gain={gain_db:.1f}dB)") # Verboso
+            except Exception as e_lufs_norm: print(f"  WARN: LUFS normalization failed: {e_lufs_norm}")
+        elif normalize: # Fallback a normalizzazione RMS se pyloudnorm manca
+             rms_amplitude = np.sqrt(np.mean(np.square(data_to_process)))
+             if rms_amplitude > 1e-9:
+                 current_rms_dbfs = 20 * np.log10(rms_amplitude)
+                 gain_needed_db = target_norm_lufs - current_rms_dbfs # Usa target LUFS come approssimazione
+                 gain_factor = 10**(gain_needed_db / 20.0)
+                 normalized_data = data_to_process * gain_factor
+                 if not np.allclose(data_to_process, normalized_data, atol=1e-4): processing_done = True
+                 data_to_process = normalized_data
 
-            # --- Clipping di Sicurezza Finale ---
-            # Dopo la normalizzazione RMS, alcuni picchi potrebbero superare 0dBFS
-            # Applica un clipping per evitare distorsione al salvataggio
-            clip_limit_linear = 10**(final_clip_limit_dbfs / 20.0)
-            # Conta quanti campioni vengono clippati (per debug/info)
-            clipped_count = np.sum(np.abs(data_to_process) > clip_limit_linear)
-            if clipped_count > 0:
-                 print(f"  WARN: Clipping {clipped_count} samples to {final_clip_limit_dbfs}dBFS limit for {filename}.")
-                 processing_done = True # Il clipping è una modifica
-            data_to_process = np.clip(data_to_process, -clip_limit_linear, clip_limit_linear)
+        # --- Clipping di Sicurezza Finale ---
+        if normalize: # Applica clipping solo se abbiamo normalizzato
+             clip_limit_linear = 10**(final_clip_limit_dbfs / 20.0)
+             clipped_count = np.sum(np.abs(data_to_process) > clip_limit_linear)
+             if clipped_count > 0: print(f"  WARN: Clipping {clipped_count} samples for {filename}."); processing_done = True
+             data_to_process = np.clip(data_to_process, -clip_limit_linear, clip_limit_linear)
 
-
-        # --- Salvataggio (invariato, salva solo se processing_done=True) ---
+        # --- Salvataggio ---
         if processing_done:
              if SOUNDFILE_AVAILABLE:
-                 try:
-                     # --- Check NaN/Inf prima di salvare ---
+                 try: #... (Sanitizzazione NaN/Inf e sf.write) ...
                      if np.isnan(data_to_process).any() or np.isinf(data_to_process).any():
-                         print(f"  WARN: Found NaN/Inf before saving {filename}. Sanitizing.")
-                         data_to_process = np.nan_to_num(data_to_process, nan=0.0, posinf=0.0, neginf=0.0)
+                         print(f"  WARN: NaN/Inf before saving {filename}. Sanitizing."); data_to_process = np.nan_to_num(data_to_process, nan=0.0, posinf=0.0, neginf=0.0)
                      sf.write(output_path, data_to_process, rate, format='FLAC', subtype='PCM_16'); return True
-                 except Exception as e_save: print(f"!!! ERROR saving {output_path}: {e_save}")
+                 except Exception as e: print(f"!!! ERROR saving {output_path}: {e}")
              else: print(f"ERROR: SoundFile missing, cannot save {output_path}")
-        else: return False # Non salvato perché non processato
+        else: return False # Non modificato, non salva
     except Exception as e_main: print(f"!!! ERROR in preprocess_audio for {filename}: {e_main}"); traceback.print_exc()
     return False
 
