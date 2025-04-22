@@ -23,7 +23,7 @@ ANALYSIS_CHUNK_MS = 50
 DEFAULT_MIN_SILENCE_LEN_MS_DYNAMIC: int = 700
 DEFAULT_SILENCE_THRESH_DBFS_DYNAMIC: float = -35.0
 # Per Splitting Ibrido e Padding
-TARGET_CHUNK_DURATION_SECONDS: float = 10 * 60  # 10 minuti
+TARGET_CHUNK_DURATION_SECONDS: float = 7 * 60  # 7 minuti
 MIN_DURATION_FOR_SPLIT_SECONDS: float = TARGET_CHUNK_DURATION_SECONDS + (1 * 60) # Splitta solo se > 11 min
 DEFAULT_KEEP_SILENCE_MS: int = 250                       # Padding
 # Parametri specifici per trovare taglio silenzioso
