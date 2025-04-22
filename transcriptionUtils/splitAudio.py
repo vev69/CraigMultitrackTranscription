@@ -213,7 +213,8 @@ def split_large_audio_files(original_audio_dir: str, split_audio_dir: str,
         "silence_search_range_ms": silence_search_range_ms,
         "files": {} }
     manifest_path = os.path.join(split_audio_dir, SPLIT_MANIFEST_FILENAME)
-    # ... (Inizializza contatori) ...
+    # Inizializza contatori QUI
+    total_files_processed_success = 0; total_chunks_exported = 0; total_errors = 0
     original_files = sorted(custom_params_dict.keys())
     if not original_files: return None, {}
 
@@ -221,6 +222,7 @@ def split_large_audio_files(original_audio_dir: str, split_audio_dir: str,
     context = mp.get_context(start_method)
     global splitting_pool_global_ref; splitting_pool_global_ref = None
     pool_error_occurred = False
+    split_results = [] # Inizializza lista risultati
 
     try:
         with context.Pool(processes=num_workers) as pool:
@@ -228,43 +230,39 @@ def split_large_audio_files(original_audio_dir: str, split_audio_dir: str,
             # --- CORREZIONE QUI: Prepara la tupla di argomenti CORRETTA (11 elementi) ---
             tasks_args = []
             for original_path in original_files:
-                params = custom_params_dict[original_path] # Recupera T, L, A, Lufs, SNR, etc.
-                tasks_args.append(
-                    ( # Inizia la tupla con 11 elementi
-                      original_path,                       # 1
-                      split_audio_dir,                     # 2
-                      params['threshold'],                 # 3 (Dinamico)
-                      params['min_len'],                   # 4 (Dinamico)
-                      params['avg_dbfs'],                  # 5 (Dinamico)
-                      params['loudness_lufs'],             # 6 (Dinamico) - Aggiunto
-                      params['est_snr_80_15_db'],          # 7 (Dinamico) - Aggiunto
-                      keep_silence_ms,                     # 8 (Globale/Default)
-                      min_duration_for_split_seconds,      # 9 (Globale/Default)
-                      target_chunk_duration_seconds,       # 10 (Globale/Default)
-                      silence_search_range_ms              # 11 (Globale/Default)
-                    ) # Fine tupla
-                )
-            # --- FINE CORREZIONE ---
+                 params = custom_params_dict[original_path]
+                 tasks_args.append( (original_path, split_audio_dir, params['threshold'], params['min_len'], params['avg_dbfs'], params['loudness_lufs'], params['est_snr_80_15_db'], keep_silence_ms, min_duration_for_split_seconds, target_chunk_duration_seconds, silence_search_range_ms) )
 
-            split_results = []
+            
             # ... (Esecuzione pool.starmap e raccolta risultati) ...
             try: split_results = pool.starmap(_process_single_audio_file_hybrid_split, tasks_args); print(f"\nCompletati {len(split_results)} task splitting.")
             except Exception as pool_error: pool_error_occurred = True; print(f"!!! Errore Pool Splitting: {pool_error}")
-            if not pool_error_occurred: # Processa risultati
-                 for result_tuple in split_results: #... (logica raccolta risultati invariata) ...
-                     try: file_manifest_entries, success_flag, chunks_exported, _ = result_tuple; #...
-                     except Exception as e: total_errors += 1; print(f"!!! Errore processando risultato split: {e}")
+            # Processa risultati QUI, aggiornando i contatori
+            if not pool_error_occurred:
+                for result_tuple in split_results:
+                    try:
+                        file_manifest_entries, success_flag, chunks_exported, _ = result_tuple
+                        if success_flag:
+                            total_files_processed_success += 1 # Incrementa qui
+                            split_manifest["files"].update(file_manifest_entries)
+                            total_chunks_exported += chunks_exported # Incrementa qui
+                        else:
+                            total_errors += 1 # Incrementa qui
+                    except Exception as e:
+                        total_errors += 1 # Incrementa qui
+                        print(f"!!! Errore processando risultato split: {e}")
+    finally:
+        splitting_pool_global_ref = None
 
-    finally: splitting_pool_global_ref = None
-
-    # ... (Riepilogo e Salvataggio Manifest) ...
-    if pool_error_occurred: print("Pipeline Splitting terminata con errori."); return None, {}
-    print(f"\n--- Pipeline Splitting Completata ---")
-    print(f"File processati: {total_files_processed_success} (errori: {total_errors})") # Aggiorna contatori qui
-    print(f"  - Totale chunk esportati: {total_chunks_exported}")
+    # --- Riepilogo Finale (ORA i contatori sono definiti) ---
+    print(f"\n--- Pipeline di Splitting (Analisi + Ibrido) Completata ---")
+    print(f"File originali processati: {total_files_processed_success} (errori: {total_errors})") # Ora è OK
+    print(f"  - Totale chunk finali esportati: {total_chunks_exported}") # Ora è OK
     print(f"Totale voci nel manifest: {len(split_manifest['files'])}")
-    if not split_manifest["files"]: return None, {}
-    try: # Salva manifest
+
+    if not split_manifest["files"]: print("Nessun file processato o aggiunto al manifest."); return None, {}
+    # --- Salvataggio Manifest ---
+    try:
         with open(manifest_path, 'w', encoding='utf-8') as f: json.dump(split_manifest, f, ensure_ascii=False, indent=4)
         print(f"Manifest salvato in: {manifest_path} (Target LUFS: {effective_target_lufs:.1f})")
         return manifest_path, split_manifest
