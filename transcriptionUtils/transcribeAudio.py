@@ -43,28 +43,39 @@ except ImportError:
     print("Modulo Optimum BetterTransformer non trovato (pip install optimum[\"bettertransformer\"]).")
     OPTIMUM_AVAILABLE = False
 
-# --- Funzione di Preprocessing (Implementa Boost/NR condizionale) ---
+# --- Funzione di Preprocessing (MODIFICATA per Normalizzazione RMS e NR più dolce) ---
 def preprocess_audio(input_path: str, output_path: str,
                      noise_reduce=True, normalize=True,
+                     # Parametri per boost/NR condizionale
                      original_avg_dbfs: float | None = None,
-                     target_avg_dbfs: float = -18.0,
+                     target_avg_dbfs: float = -18.0, # Target RMS dBFS
                      boost_threshold_db: float = 6.0,
-                     nr_prop_decrease_normal: float = 0.85,
-                     nr_prop_decrease_boosted: float = 0.95,
-                     target_peak_dbfs: float = -3.0):
+                     # Parametri NR più conservativi
+                     nr_prop_decrease_normal: float = 0.80, # Ridotto da 0.85
+                     nr_prop_decrease_boosted: float = 0.90, # Ridotto da 0.95
+                     # Rimuovi target_peak_dbfs, useremo RMS
+                     # target_peak_dbfs: float = -3.0,
+                     # Aggiungi un limite di sicurezza per il clipping finale
+                     final_clip_limit_dbfs: float = -0.5): # Limita picco finale a -0.5dBFS
+    """
+    Applica boost condizionale, riduzione rumore (più conservativa),
+    e normalizzazione RMS finale con clipping di sicurezza.
+    """
     filename = os.path.basename(input_path); processing_done = False
     try:
         audio = AudioSegment.from_file(input_path)
         if len(audio) == 0: return False
-        # Boost Condizionale
+
+        # --- Boost Condizionale (invariato) ---
         gain_to_apply = 0.0; apply_stronger_nr = False
         if original_avg_dbfs is not None and np.isfinite(original_avg_dbfs) and \
            original_avg_dbfs < (target_avg_dbfs - boost_threshold_db):
-            gain_to_apply = min(target_avg_dbfs - original_avg_dbfs, 24.0) # Limita boost
+            gain_to_apply = min(target_avg_dbfs - original_avg_dbfs, 24.0)
             print(f"  Applying +{gain_to_apply:.1f}dB boost to {filename} (orig avg: {original_avg_dbfs:.1f}dBFS)")
             try: audio = audio + gain_to_apply; apply_stronger_nr = True; processing_done = True
             except Exception as boost_err: print(f"  WARN: Failed boost: {boost_err}")
-        # Conversione a NumPy Float32
+
+        # --- Conversione a NumPy Float32 (invariata) ---
         if audio.channels > 1: audio = audio.set_channels(1)
         samples = np.array(audio.get_array_of_samples()).astype(np.float32)
         if audio.sample_width == 1: samples /= (1 << 7)
@@ -73,49 +84,65 @@ def preprocess_audio(input_path: str, output_path: str,
         elif audio.sample_width == 4: samples /= (1 << 31)
         else: print(f"ERROR: Unsupp. sample width {audio.sample_width}"); return False
         rate = audio.frame_rate; data_to_process = samples
-        # Noise Reduction Condizionale
+
+        # --- Riduzione Rumore Condizionale (con parametri più conservativi) ---
         if noise_reduce and NOISEREDUCE_AVAILABLE:
             nr_prop = nr_prop_decrease_boosted if apply_stronger_nr else nr_prop_decrease_normal
             # print(f"  Applying NR (prop={nr_prop:.2f})") # Meno verboso
             try:
                 reduced = nr.reduce_noise(y=data_to_process, sr=rate, stationary=False, prop_decrease=nr_prop)
-                if reduced is not None and len(reduced) > 0: data_to_process = reduced; processing_done = True
+                if reduced is not None and len(reduced) > 0:
+                    # Verifica se NR ha cambiato i dati
+                    if not np.allclose(data_to_process, reduced, atol=1e-5):
+                         processing_done = True
+                    data_to_process = reduced
                 else: print(f"  WARN: NR produced empty output for {filename}.")
             except Exception as e_nr: print(f"  WARN: NR failed: {e_nr}")
         elif noise_reduce: print(f"  WARN: Noisereduce lib missing for {filename}.")
-        # Normalizzazione Finale
+
+        # --- NUOVA Normalizzazione: Basata su RMS/dBFS medio target ---
         if normalize:
-            peak = np.max(np.abs(data_to_process)); target_amp = 10**(target_peak_dbfs / 20.0)
-            if peak > 1e-6: # Evita /0
-                 current_peak_dbfs = 20 * np.log10(peak)
-                 if current_peak_dbfs > (target_peak_dbfs - 20): # Non boostare troppo se già silenzioso
-                      gain = target_amp / peak; normalized = np.clip(data_to_process * gain, -1.0, 1.0)
-                      if not np.allclose(data_to_process, normalized, atol=1e-4): processing_done = True
-                      data_to_process = normalized
-        print(f"  DEBUG {filename}: Shape={data_to_process.shape}, dtype={data_to_process.dtype}, Min={np.min(data_to_process):.4f}, Max={np.max(data_to_process):.4f}, HasNaN={np.isnan(data_to_process).any()}, HasInf={np.isinf(data_to_process).any()}")
-        print(f"  DEBUG {filename}: Rate={rate}, OutputPath={output_path}")
-        # Salvataggio (SOLO se modificato)
+            # Calcola dBFS RMS dei dati correnti
+            # Evita log(0) per segmenti silenziosi
+            rms_amplitude = np.sqrt(np.mean(np.square(data_to_process)))
+            if rms_amplitude > 1e-9: # Se non è praticamente silenzio digitale
+                current_rms_dbfs = 20 * np.log10(rms_amplitude)
+                gain_needed_db = target_avg_dbfs - current_rms_dbfs
+                # Applica guadagno per raggiungere target_avg_dbfs
+                gain_factor = 10**(gain_needed_db / 20.0)
+                normalized_data = data_to_process * gain_factor
+                # Verifica se la normalizzazione ha cambiato i dati
+                if not np.allclose(data_to_process, normalized_data, atol=1e-4):
+                    processing_done = True
+                data_to_process = normalized_data
+                # print(f"  Applied RMS normalization to {target_avg_dbfs} dBFS (CurrentRMS={current_rms_dbfs:.1f}, Gain={gain_needed_db:.1f}dB)") # Meno verboso
+            # else: print("  Skipping RMS normalization (near silent).") # Meno verboso
+
+            # --- Clipping di Sicurezza Finale ---
+            # Dopo la normalizzazione RMS, alcuni picchi potrebbero superare 0dBFS
+            # Applica un clipping per evitare distorsione al salvataggio
+            clip_limit_linear = 10**(final_clip_limit_dbfs / 20.0)
+            # Conta quanti campioni vengono clippati (per debug/info)
+            clipped_count = np.sum(np.abs(data_to_process) > clip_limit_linear)
+            if clipped_count > 0:
+                 print(f"  WARN: Clipping {clipped_count} samples to {final_clip_limit_dbfs}dBFS limit for {filename}.")
+                 processing_done = True # Il clipping è una modifica
+            data_to_process = np.clip(data_to_process, -clip_limit_linear, clip_limit_linear)
+
+
+        # --- Salvataggio (invariato, salva solo se processing_done=True) ---
         if processing_done:
              if SOUNDFILE_AVAILABLE:
                  try:
-                    # --- NUOVO BLOCCO: Controllo e Sanitizzazione Dati ---
-                    contains_nan = np.isnan(data_to_process).any()
-                    contains_inf = np.isinf(data_to_process).any()
-                    if contains_nan or contains_inf:
-                         print(f"  WARN: Found NaN/Inf in data for {filename} before saving. Sanitizing with 0.0.")
-                         # Sostituisci NaN con 0, Inf con 0 (o un valore molto grande/piccolo se preferisci)
+                     # --- Check NaN/Inf prima di salvare ---
+                     if np.isnan(data_to_process).any() or np.isinf(data_to_process).any():
+                         print(f"  WARN: Found NaN/Inf before saving {filename}. Sanitizing.")
                          data_to_process = np.nan_to_num(data_to_process, nan=0.0, posinf=0.0, neginf=0.0)
-                         # Verifica di nuovo (opzionale)
-                         # if np.isnan(data_to_process).any() or np.isinf(data_to_process).any():
-                         #     print(f"  ERROR: Sanitization failed for {filename}!")
-                         #     return False # Fallisce se la sanitizzazione non ha funzionato
-                     # --- FINE NUOVO BLOCCO --- 
-                    sf.write(output_path, data_to_process, rate, format='FLAC', subtype='PCM_16'); return True
-                 except Exception as e: print(f"!!! ERROR saving {output_path}: {e}")
+                     sf.write(output_path, data_to_process, rate, format='FLAC', subtype='PCM_16'); return True
+                 except Exception as e_save: print(f"!!! ERROR saving {output_path}: {e_save}")
              else: print(f"ERROR: SoundFile missing, cannot save {output_path}")
-        else: # print(f"  Skipping save for {filename} (no processing needed).") # Meno verboso
-             return False # Indica che non è stato salvato (o non serviva)
-    except Exception as e: print(f"!!! ERROR in preprocess_audio for {filename}: {e}"); traceback.print_exc()
+        else: return False # Non salvato perché non processato
+    except Exception as e_main: print(f"!!! ERROR in preprocess_audio for {filename}: {e_main}"); traceback.print_exc()
     return False
 
 
