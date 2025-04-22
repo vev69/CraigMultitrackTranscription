@@ -92,10 +92,25 @@ def preprocess_audio(input_path: str, output_path: str,
                       gain = target_amp / peak; normalized = np.clip(data_to_process * gain, -1.0, 1.0)
                       if not np.allclose(data_to_process, normalized, atol=1e-4): processing_done = True
                       data_to_process = normalized
+        print(f"  DEBUG {filename}: Shape={data_to_process.shape}, dtype={data_to_process.dtype}, Min={np.min(data_to_process):.4f}, Max={np.max(data_to_process):.4f}, HasNaN={np.isnan(data_to_process).any()}, HasInf={np.isinf(data_to_process).any()}")
+        print(f"  DEBUG {filename}: Rate={rate}, OutputPath={output_path}")
         # Salvataggio (SOLO se modificato)
         if processing_done:
              if SOUNDFILE_AVAILABLE:
-                 try: sf.write(output_path, data_to_process, rate, format='FLAC', subtype='PCM_16'); return True
+                 try:
+                    # --- NUOVO BLOCCO: Controllo e Sanitizzazione Dati ---
+                    contains_nan = np.isnan(data_to_process).any()
+                    contains_inf = np.isinf(data_to_process).any()
+                    if contains_nan or contains_inf:
+                         print(f"  WARN: Found NaN/Inf in data for {filename} before saving. Sanitizing with 0.0.")
+                         # Sostituisci NaN con 0, Inf con 0 (o un valore molto grande/piccolo se preferisci)
+                         data_to_process = np.nan_to_num(data_to_process, nan=0.0, posinf=0.0, neginf=0.0)
+                         # Verifica di nuovo (opzionale)
+                         # if np.isnan(data_to_process).any() or np.isinf(data_to_process).any():
+                         #     print(f"  ERROR: Sanitization failed for {filename}!")
+                         #     return False # Fallisce se la sanitizzazione non ha funzionato
+                     # --- FINE NUOVO BLOCCO --- 
+                    sf.write(output_path, data_to_process, rate, format='FLAC', subtype='PCM_16'); return True
                  except Exception as e: print(f"!!! ERROR saving {output_path}: {e}")
              else: print(f"ERROR: SoundFile missing, cannot save {output_path}")
         else: # print(f"  Skipping save for {filename} (no processing needed).") # Meno verboso
