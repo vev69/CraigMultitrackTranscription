@@ -15,6 +15,11 @@ except ImportError: OPTIMUM_AVAILABLE = False
 try: import pyloudnorm as pyln; PYLOUDNORM_AVAILABLE = True # type: ignore
 except ImportError: PYLOUDNORM_AVAILABLE = False
 
+
+# Valori default per parametri funzione
+DEFAULT_NUM_BEAMS_TA = 1
+DEFAULT_BATCH_SIZE_HF_TA = 16
+
 # --- Funzione di Preprocessing (MODIFICATA per logica adattiva LUFS/SNR) ---
 def preprocess_audio(input_path: str, output_path: str,
                      noise_reduce=True, normalize=True,
