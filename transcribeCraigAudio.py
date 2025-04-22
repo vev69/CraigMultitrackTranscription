@@ -263,18 +263,23 @@ if __name__ == "__main__":
     preprocessed_audio_dir = None
     base_output_dir = None
     split_manifest_path = None
-    split_manifest_content = None
     selected_models = []
     model_input = "" # Per salvare l'input originale dell'utente sui modelli
 
     # --- Load Checkpoint or Initialize ---
     checkpoint_found = load_checkpoint()
     perform_split_and_preprocess = True # Assumi di dover fare tutto per una nuova sessione
+    split_manifest_content = None
 
     if checkpoint_found:
         # ... (Logica ripresa/nuova sessione invariata, ma mostra info aggiuntive) ...
         print(f"Ripresa da checkpoint.")
         # Recupera parametri da checkpoint, se presenti
+        base_input_directory = checkpoint_data.get("base_input_directory")
+        split_audio_dir = checkpoint_data.get("split_audio_directory")
+        preprocessed_audio_dir = checkpoint_data.get("preprocessed_audio_directory")
+        base_output_dir = checkpoint_data.get("base_output_directory")
+        split_manifest_path = checkpoint_data.get("split_manifest_path")
         checkpoint_data.get("num_workers_used", os.cpu_count()) # Recupera core usati
         num_beams_to_use = checkpoint_data.get("num_beams", DEFAULT_NUM_BEAMS)
         batch_size_hf_to_use = checkpoint_data.get("batch_size_hf", DEFAULT_BATCH_SIZE_HF)
@@ -294,6 +299,8 @@ if __name__ == "__main__":
         if resume == 'n':
             # ... (Logica rimozione checkpoint e reset) ...
             print("Avvio nuova sessione. RIMOZIONE del checkpoint precedente...")
+            checkpoint_data = {}; checkpoint_found = False; 
+            perform_split_and_preprocess = True
             try:
                 if os.path.exists(CHECKPOINT_FILE):
                     os.remove(CHECKPOINT_FILE); print(f"File checkpoint '{CHECKPOINT_FILE}' rimosso.")
@@ -309,6 +316,7 @@ if __name__ == "__main__":
                 checkpoint_data = {}; checkpoint_found = False
         else:
              print("Ripresa della sessione dal checkpoint.")
+             perform_split_and_preprocess = False
              # Verifica esistenza directory e manifest dal checkpoint
              if not os.path.isdir(checkpoint_data.get('split_audio_directory','')) or \
                 not os.path.isdir(checkpoint_data.get('preprocessed_audio_directory','')) or \
@@ -321,7 +329,7 @@ if __name__ == "__main__":
     # --- Get User Input if NO valid checkpoint exists or user chose NOT to resume ---
     if not checkpoint_found or perform_split_and_preprocess:
         if not checkpoint_found:
-          print("\n--- Nuova Sessione ---")
+          print("\n--- Configurazione Nuova Sessione ---")
           # --- Selezione Modelli (invariata rispetto a v1) ---
           ALL_AVAILABLE_MODELS = [
             "whisper-medium", "whisper-largev2", "whisper-largev3",
@@ -410,8 +418,7 @@ if __name__ == "__main__":
 
            # --- Definisci Percorsi (anche se resume='n', recupera da checkpoint o ridefinisci) ---
           if not base_input_directory: base_input_directory = checkpoint_data.get("base_input_directory") # Fallback
-          if not base_input_directory or not os.path.isdir(base_input_directory):
-            print("ERRORE: Impossibile determinare la directory di input base."); allow_sleep(); sys.exit(1)
+          if not base_input_directory: print("ERRORE CRITICO: base_input_directory non definito!"); allow_sleep(); sys.exit(1)
           split_audio_dir = os.path.join(base_input_directory, SPLIT_FOLDER_NAME)
           preprocessed_audio_dir = os.path.join(base_input_directory, PREPROCESSED_FOLDER_NAME)
           base_output_dir = os.path.join(base_input_directory, BASE_OUTPUT_FOLDER_NAME)
@@ -474,31 +481,32 @@ if __name__ == "__main__":
         # --- Crea/Aggiorna Checkpoint DOPO split/preprocess (se eseguiti) o alla prima run ---
         if not checkpoint_found or perform_split_and_preprocess:
              total_chunks_expected_calc = len(split_manifest_content.get('files', {})) if split_manifest_content else 0
-             # Se è una vera nuova sessione, crea da zero
-             if not checkpoint_found:
-                 checkpoint_data = {
-                     "base_input_directory": base_input_directory, "split_audio_directory": split_audio_dir,
-                     "preprocessed_audio_directory": preprocessed_audio_dir, "base_output_directory": base_output_dir,
-                     "split_manifest_path": split_manifest_path, "original_model_choice": model_input,
-                     "models_to_process": selected_models, "num_workers_used": num_cores_to_use,
-                     "num_beams": num_beams_to_use, "batch_size_hf": batch_size_hf_to_use,
-                     "total_chunks_expected": total_chunks_expected_calc, "files_processed": {},
-                     "current_model_processing": None, "last_saved": None
-                 }
-                 print("Dati nuova sessione inizializzati.");
-             else: # Altrimenti (resume='n' o skip_split='n'), aggiorna solo i campi rilevanti
-                 checkpoint_data["base_input_directory"] = base_input_directory
-                 checkpoint_data["split_audio_directory"] = split_audio_dir
-                 checkpoint_data["preprocessed_audio_directory"] = preprocessed_audio_dir
-                 checkpoint_data["base_output_directory"] = base_output_dir
-                 checkpoint_data["split_manifest_path"] = split_manifest_path
-                 # NON sovrascrivere models_to_process o files_processed se stiamo rifacendo split/preproc
-                 checkpoint_data["num_workers_used"] = num_cores_to_use
-                 checkpoint_data["num_beams"] = num_beams_to_use
-                 checkpoint_data["batch_size_hf"] = batch_size_hf_to_use
-                 checkpoint_data["total_chunks_expected"] = total_chunks_expected_calc
-                 print("Aggiornati percorsi e parametri nel checkpoint esistente.")
-             save_checkpoint()
+             # **CORREZIONE QUI: Aggiorna o Crea il dizionario GLOBALE checkpoint_data**
+        checkpoint_data.update({ # Usa update per aggiungere/sovrascrivere
+            "base_input_directory": base_input_directory,
+            "split_audio_directory": split_audio_dir,
+            "preprocessed_audio_directory": preprocessed_audio_dir,
+            "base_output_dir": base_output_dir,
+            "split_manifest_path": split_manifest_path,
+            "num_workers_used": num_cores_to_use,
+            "num_beams": num_beams_to_use,
+            "batch_size_hf": batch_size_hf_to_use,
+            "total_chunks_expected": total_chunks_expected_calc,
+            # Mantieni questi se checkpoint esisteva e resume='n'
+            "original_model_choice": checkpoint_data.get("original_model_choice", model_input),
+            "models_to_process": checkpoint_data.get("models_to_process", selected_models),
+            "files_processed": checkpoint_data.get("files_processed", {}),
+            "current_model_processing": checkpoint_data.get("current_model_processing", None)
+        })
+        # Se era una vera nuova sessione, aggiungi i dati mancanti
+        if not checkpoint_found:
+             checkpoint_data["original_model_choice"] = model_input
+             checkpoint_data["models_to_process"] = selected_models
+             checkpoint_data["files_processed"] = {}
+             checkpoint_data["current_model_processing"] = None
+
+        print("Dati sessione pronti per salvataggio checkpoint.");
+        save_checkpoint() # Salva lo stato COMPLETO
 
     # --- Setup Generale post-input/checkpoint ---
     # Assicurati che tutti i path necessari siano definiti prima del loop principale

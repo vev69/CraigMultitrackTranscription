@@ -66,12 +66,12 @@ def _preprocess_worker(input_chunk_path: str, output_chunk_path: str,
 # Funzione Principale Preprocessing (MODIFICATA per passare solo parametri necessari)
 def run_parallel_preprocessing(input_chunk_dir: str, preprocessed_output_dir: str, num_workers: int,
                                manifest_path: str,
-                               target_avg_dbfs: float, # Manteniamo questo nome anche se contiene LUFS target
+                               #target_avg_dbfs: float, # Manteniamo questo nome anche se contiene LUFS target
                                boost_threshold_db: float,
                                supported_extensions: tuple
                                ) -> tuple[int, int, list[str]]:
     """Esegue preprocessing con boost/NR condizionale basato su metriche nel manifest."""
-    print(f"\n--- Avvio Preprocessing Parallelo (Boost/NR Adattivo) ---")
+    print(f"\n--- Avvio Preprocessing Parallelo (Boost/NR Adattivo  via Manifest) ---")
     # ... (Check dirs, trova files...) ...
     if not os.path.isdir(input_chunk_dir): return 0, 0, []
     if not os.path.isfile(manifest_path): print(f"ERRORE: Manifest non trovato: {manifest_path}"); return 0, 0, []
@@ -95,7 +95,7 @@ def run_parallel_preprocessing(input_chunk_dir: str, preprocessed_output_dir: st
                 (os.path.join(input_chunk_dir, filename),
                  os.path.join(preprocessed_output_dir, filename),
                  manifest_path,
-                 target_avg_dbfs,      # Passa target (anche se è LUFS)
+                 #target_avg_dbfs,      # Passa target (anche se è LUFS)
                  boost_threshold_db    # Passa soglia
                  )
                 for filename in files_to_process ]
