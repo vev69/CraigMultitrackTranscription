@@ -156,15 +156,19 @@ def _run_parallel_audio_analysis(original_audio_dir: str, supported_extensions: 
 
 
 # --- WORKER Splitting (Riceve dict parametri e salva metriche rilevanti) ---
-def _process_single_audio_file_hybrid_split(original_path: str, split_audio_dir: str,
-                                            # Riceve l'intero dizionario dei parametri calcolati
-                                            original_file_params: dict,
-                                            # Parametri globali/configurabili
-                                            keep_silence_ms: int,
-                                            min_duration_for_split_seconds: float,
-                                            target_chunk_duration_seconds: float,
-                                            silence_search_range_ms: int
-                                            ) -> tuple[dict, int, int, int]:
+def _process_single_audio_file_hybrid_split(
+    original_path: str,
+    split_audio_dir: str,
+    # Parametri specifici calcolati
+    silence_thresh_dbfs: float,
+    min_silence_len_ms: int,
+    original_avg_dbfs: float, # <-- Aggiunto per Approccio B
+    # Parametri globali configurabili
+    keep_silence_ms: int,
+    min_duration_for_split_seconds: float, # <-- Rinominato qui
+    target_chunk_duration_seconds: float,  # <-- Aggiunto qui
+    silence_search_range_ms: int         # <-- Aggiunto qui
+) -> tuple[dict, int, int, int]:
     filename = os.path.basename(original_path); file_manifest_entries = {}; chunks_exported_count = 0; success_flag = 0
     try:
         base_name, ext = os.path.splitext(filename); audio = AudioSegment.from_file(original_path)
@@ -234,6 +238,7 @@ def _process_single_audio_file_hybrid_split(original_path: str, split_audio_dir:
 
 # --- Funzione Principale (Orchestra Analisi + Splitting, salva target LUFS nel manifest) ---
 def split_large_audio_files(original_audio_dir: str, split_audio_dir: str,
+                            # Parametri di default (assicurati siano tutti qui)
                             target_chunk_duration_seconds: float = TARGET_CHUNK_DURATION_SECONDS,
                             min_duration_for_split_seconds: float = MIN_DURATION_FOR_SPLIT_SECONDS,
                             default_min_silence_len_ms: int = DEFAULT_MIN_SILENCE_LEN_MS_DYNAMIC,
@@ -246,12 +251,12 @@ def split_large_audio_files(original_audio_dir: str, split_audio_dir: str,
     # ... (Stampa parametri iniziali) ...
     # ... (Logica num_workers, check dirs...) ...
 
-    # --- FASE 1: Analisi Parallela -> Ottiene custom_params E effective_target_lufs ---
+    # --- FASE 1: Analisi Parallela (Ottiene parametri per file e target LUFS) ---
     custom_params_dict, effective_target_lufs = _run_parallel_audio_analysis(
-        original_audio_dir, supported_extensions, num_workers if num_workers is not None else os.cpu_count() or 4,
+        original_audio_dir, supported_extensions,
+        max(1, min(4, (num_workers if num_workers is not None else os.cpu_count() or 4) // 2)), # Usa num ridotto per analisi
         default_silence_thresh_dbfs, default_min_silence_len_ms
     )
-
     # --- FASE 2: Splitting/Copia Parallela ---
     print(f"\n--- Avvio Splitting/Copia Ibrida Parallela (Workers: {num_workers}) ---")
     split_manifest = { # Salva parametri e target LUFS
