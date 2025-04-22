@@ -421,7 +421,7 @@ if __name__ == "__main__":
           if not base_input_directory: print("ERRORE CRITICO: base_input_directory non definito!"); allow_sleep(); sys.exit(1)
           split_audio_dir = os.path.join(base_input_directory, SPLIT_FOLDER_NAME)
           preprocessed_audio_dir = os.path.join(base_input_directory, PREPROCESSED_FOLDER_NAME)
-          base_output_dir = os.path.join(base_input_directory, BASE_OUTPUT_FOLDER_NAME)
+          base_output_dir = os.path.join(base_input_directory, BASE_OUTPUT_FOLDER_NAME) # Definito qui
           split_manifest_path = os.path.join(split_audio_dir, splitter.SPLIT_MANIFEST_FILENAME)
 
           # --- LOGICA PER SALTARE SPLIT/COPY (NUOVO) ---
@@ -479,33 +479,40 @@ if __name__ == "__main__":
             elif not valid_preprocessed_paths: print("\nWarn: Nessun chunk preprocessato valido.")
 
         # --- Crea/Aggiorna Checkpoint DOPO split/preprocess (se eseguiti) o alla prima run ---
-        if not checkpoint_found or perform_split_and_preprocess:
-             total_chunks_expected_calc = len(split_manifest_content.get('files', {})) if split_manifest_content else 0
-             # **CORREZIONE QUI: Aggiorna o Crea il dizionario GLOBALE checkpoint_data**
-        checkpoint_data.update({ # Usa update per aggiungere/sovrascrivere
-            "base_input_directory": base_input_directory,
-            "split_audio_directory": split_audio_dir,
-            "preprocessed_audio_directory": preprocessed_audio_dir,
-            "base_output_dir": base_output_dir,
-            "split_manifest_path": split_manifest_path,
-            "num_workers_used": num_cores_to_use,
-            "num_beams": num_beams_to_use,
-            "batch_size_hf": batch_size_hf_to_use,
-            "total_chunks_expected": total_chunks_expected_calc,
-            # Mantieni questi se checkpoint esisteva e resume='n'
-            "original_model_choice": checkpoint_data.get("original_model_choice", model_input),
-            "models_to_process": checkpoint_data.get("models_to_process", selected_models),
-            "files_processed": checkpoint_data.get("files_processed", {}),
-            "current_model_processing": checkpoint_data.get("current_model_processing", None)
-        })
-        # Se era una vera nuova sessione, aggiungi i dati mancanti
+        total_chunks_expected_calc = len(split_manifest_content.get('files', {})) if split_manifest_content else 0
+        # Se era una vera nuova sessione, INIZIALIZZA checkpoint_data da zero
         if not checkpoint_found:
-             checkpoint_data["original_model_choice"] = model_input
-             checkpoint_data["models_to_process"] = selected_models
-             checkpoint_data["files_processed"] = {}
-             checkpoint_data["current_model_processing"] = None
-
-        print("Dati sessione pronti per salvataggio checkpoint.");
+            checkpoint_data = {
+                "base_input_directory": base_input_directory,
+                "split_audio_directory": split_audio_dir,
+                "preprocessed_audio_directory": preprocessed_audio_dir,
+                "base_output_directory": base_output_dir, # <-- ASSICURATI SIA QUI
+                "split_manifest_path": split_manifest_path,
+                "original_model_choice": model_input, # Dall'input utente
+                "models_to_process": selected_models, # Dall'input utente
+                "num_workers_used": num_cores_to_use, # Dall'input utente
+                "num_beams": num_beams_to_use,       # Dall'input utente
+                "batch_size_hf": batch_size_hf_to_use, # Dall'input utente
+                "total_chunks_expected": total_chunks_expected_calc,
+                "files_processed": {}, # Inizia vuoto
+                "current_model_processing": None,
+                "last_saved": None
+            }
+            print("Dati nuova sessione inizializzati nel checkpoint.")
+        else: # Altrimenti (resume='n' o skip_split='n'), aggiorna solo campi specifici
+             checkpoint_data.update({
+                 "base_input_directory": base_input_directory,
+                 "split_audio_directory": split_audio_dir,
+                 "preprocessed_audio_directory": preprocessed_audio_dir,
+                 "base_output_directory": base_output_dir, # <-- AGGIORNA ANCHE QUI
+                 "split_manifest_path": split_manifest_path,
+                 "num_workers_used": num_cores_to_use, # Aggiorna se è stato richiesto di nuovo
+                 "num_beams": num_beams_to_use, # Aggiorna se è stato richiesto di nuovo
+                 "batch_size_hf": batch_size_hf_to_use, # Aggiorna se è stato richiesto di nuovo
+                 "total_chunks_expected": total_chunks_expected_calc
+                 # Non toccare models_to_process, files_processed, current_model se resume=n
+             })
+             print("Aggiornati percorsi/parametri/chunk totali nel checkpoint esistente.")
         save_checkpoint() # Salva lo stato COMPLETO
 
     # --- Setup Generale post-input/checkpoint ---
