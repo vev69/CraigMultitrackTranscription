@@ -65,13 +65,13 @@ def _preprocess_worker(input_chunk_path: str, output_chunk_path: str,
 
 # Funzione Principale Preprocessing (MODIFICATA per passare solo parametri necessari)
 def run_parallel_preprocessing(input_chunk_dir: str, preprocessed_output_dir: str, num_workers: int,
-                               manifest_path: str, # Path al manifest JSON
-                               #target_avg_dbfs: float,  
-                               boost_threshold_db: float, # Soglia per boost
+                               manifest_path: str,
+                               target_avg_dbfs: float, # Manteniamo questo nome anche se contiene LUFS target
+                               boost_threshold_db: float,
                                supported_extensions: tuple
                                ) -> tuple[int, int, list[str]]:
     """Esegue preprocessing con boost/NR condizionale basato su metriche nel manifest."""
-    print(f"\n--- Avvio Preprocessing Parallelo (Boost/NR Adattivo via Manifest) ---")
+    print(f"\n--- Avvio Preprocessing Parallelo (Boost/NR Adattivo) ---")
     # ... (Check dirs, trova files...) ...
     if not os.path.isdir(input_chunk_dir): return 0, 0, []
     if not os.path.isfile(manifest_path): print(f"ERRORE: Manifest non trovato: {manifest_path}"); return 0, 0, []
@@ -85,32 +85,55 @@ def run_parallel_preprocessing(input_chunk_dir: str, preprocessed_output_dir: st
     start_method = 'spawn' if platform.system() != 'Linux' else None
     context = mp.get_context(start_method)
     global preprocessing_pool_global_ref; preprocessing_pool_global_ref = None
-    pool_error_occurred = False
+    pool_error_occurred = False # Flag per errore nel pool
+    results = [] # Inizializza risultati
+
     try:
         with context.Pool(processes=num_workers) as pool:
             preprocessing_pool_global_ref = pool
-             # La creazione di tasks_args passa correttamente 5 argomenti
             tasks_args = [
-                (os.path.join(input_chunk_dir, filename), os.path.join(preprocessed_output_dir, filename),
-                 manifest_path, boost_threshold_db) # 4 argomenti
+                (os.path.join(input_chunk_dir, filename),
+                 os.path.join(preprocessed_output_dir, filename),
+                 manifest_path,
+                 target_avg_dbfs,      # Passa target (anche se è LUFS)
+                 boost_threshold_db    # Passa soglia
+                 )
                 for filename in files_to_process ]
-            results = []
-            try: 
-                # Starmap chiama il worker con i 5 argomenti per ogni task
-                results = pool.starmap(_preprocess_worker, tasks_args); 
+            try:
+                # Esegui i task
+                results = pool.starmap(_preprocess_worker, tasks_args)
                 print(f"Completati {len(results)} task preprocessing.")
-            except Exception as pool_error: pool_error_occurred = True; 
-            print(f"!!! Errore Pool Preprocessing: {pool_error}")
-            if not pool_error_occurred: # Processa risultati
-                for result_tuple in results:
-                    try:
-                        output_file_path, success = result_tuple
-                        if success: success_count += 1;
-                        if success and output_file_path: output_file_paths.append(output_file_path)
-                        elif not success: failure_count += 1
-                    except Exception as e: failure_count += 1; print(f"!!! Errore processando risultato preproc: {e}")
-    finally: preprocessing_pool_global_ref = None
-    if pool_error_occurred: print("Preprocessing terminato con errori.")
+            except Exception as pool_error_obj: # Cattura l'oggetto errore
+                 pool_error_occurred = True # Imposta il flag
+                 # Stampa l'errore QUI, dove la variabile è definita
+                 print(f"!!! Errore durante l'esecuzione del Pool di Preprocessing: {pool_error_obj}")
+                 # traceback.print_exc() # Aggiungi se vuoi il traceback completo
+    finally:
+        # Assicurati che il riferimento globale venga resettato
+        preprocessing_pool_global_ref = None
+
+    # --- CORREZIONE QUI ---
+    # Controlla il FLAG, non tentare di accedere a pool_error
+    if pool_error_occurred:
+        print("Processamento risultati interrotto a causa di errore nel Pool.")
+        # Ritorna conteggi/lista correnti (probabilmente vuoti o parziali)
+        return success_count, failure_count, output_file_paths
+    # --- FINE CORREZIONE ---
+    else:
+        # Processa i risultati solo se il pool è terminato normalmente
+        for result_tuple in results:
+            try:
+                output_file_path, success = result_tuple
+                if success:
+                    success_count += 1
+                    if output_file_path: output_file_paths.append(output_file_path)
+                else:
+                    failure_count += 1
+            except Exception as e:
+                failure_count += 1
+                print(f"!!! Errore processando risultato task preproc: {e}")
+
+    # Stampa Riepilogo Finale
     print(f"\n--- Preprocessing Parallelo Chunk Completato ---")
     print(f"Chunk processati/skippati: {success_count} (falliti: {failure_count})")
     print(f"Percorsi chunk preprocessati validi: {len(output_file_paths)}")
