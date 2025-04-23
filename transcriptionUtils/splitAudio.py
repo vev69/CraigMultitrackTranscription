@@ -3,12 +3,8 @@
 import os
 import json
 import math
-import time
-import concurrent.futures
-from concurrent.futures import ProcessPoolExecutor
 from pydub import AudioSegment, exceptions as pydub_exceptions # type: ignore
-from pydub.silence import detect_nonsilent, detect_silence # type: ignore
-import shutil
+from pydub.silence import detect_silence # type: ignore
 import numpy as np
 import platform
 import multiprocessing as mp

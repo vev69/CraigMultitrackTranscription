@@ -2,7 +2,7 @@
 import whisper # type: ignore
 from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor, GenerationConfig # type: ignore
 import torch # type: ignore
-import sys, os, re, traceback, time
+import os, re, traceback, time
 import numpy as np
 from pydub import AudioSegment, exceptions as pydub_exceptions # type: ignore
 try: import noisereduce as nr; NOISEREDUCE_AVAILABLE = True # type: ignore

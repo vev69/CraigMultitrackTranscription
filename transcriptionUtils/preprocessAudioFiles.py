@@ -1,15 +1,12 @@
 # --- START OF transcriptionUtils/preprocessAudioFiles.py (CORRETTO per leggere Manifest Completo) ---
 
 import os
-import time
 import json
-import concurrent.futures
-from concurrent.futures import ProcessPoolExecutor
 import transcriptionUtils.transcribeAudio as transcribe
 import transcriptionUtils.splitAudio as splitter
 import multiprocessing as mp
 import platform
-import numpy as np # Necessario per None check
+
 
 manifest_data_cache = None; manifest_path_cache = None
 
