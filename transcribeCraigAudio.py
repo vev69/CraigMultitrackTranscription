@@ -524,7 +524,7 @@ if __name__ == "__main__":
 
     # Questo controllo ora dovrebbe passare perché abbiamo popolato checkpoint_data
     required_keys = ['base_input_directory', 'split_audio_directory',
-                     'preprocessed_audio_directory', 'base_output_dir',
+                     'preprocessed_audio_directory', 'base_output_directory',
                      'split_manifest_path']
     missing_keys = [key for key in required_keys if key not in checkpoint_data]
 
