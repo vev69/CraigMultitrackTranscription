@@ -96,8 +96,8 @@ This tool automates the transcription of multi-track `.flac` or `.m4a` audio rec
 *   **`pyloudnorm not found` / `librosa not found` / `psutil not found`:** Install the missing dependency (`pip install pyloudnorm`, `pip install librosa`, `pip install psutil`). LUFS normalization and RAM-aware scaling won't work without them.
 *   **CUDA Errors / OOM:** Try smaller model size or reduce HF `batch_size`. Verify PyTorch/CUDA compatibility.
 *   **Incorrect Speaker Names:** Check original filenames match `Number-SpeakerName...ext` pattern.
-*   **Incorrect Transcript Order:** The sorting heuristic helps but isn't perfect for rapid exchanges. Timestamp inaccuracies from ASR are the main limitation.
-*   **"Ovattato" / Muffled Audio:** The current preprocessing aims to be less aggressive. If still an issue:
+*   **Incorrect Transcript Order:** The sorting heuristic helps but isn't perfect for rapid exchanges. Timestamp inaccuracies from ASR are the main limitation. Experiment with Tolerance levels in `_compare_transcribed_lines` function in `combineSpeakerTexts.py`.
+*   **Muffled Audio:** The current preprocessing aims to be less aggressive. If still an issue:
     *   Try disabling Noise Reduction entirely (by modifying the `apply_nr` logic or `noise_reduce=False` call in `preprocess_audio`). Whisper might handle the noise acceptably.
     *   Experiment with `nr_prop_decrease_*` values in `transcribeAudio.py`.
     *   Ensure LUFS normalization isn't boosting *too* much (check target LUFS).
