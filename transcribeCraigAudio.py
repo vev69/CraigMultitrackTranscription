@@ -481,7 +481,7 @@ if __name__ == "__main__":
         # --- Crea/Aggiorna Checkpoint DOPO split/preprocess (se eseguiti) o alla prima run ---
         total_chunks_expected_calc = len(split_manifest_content.get('files', {})) if split_manifest_content else 0
         # Se era una vera nuova sessione, INIZIALIZZA checkpoint_data da zero
-        if not checkpoint_found:
+        if not checkpoint_found or perform_split_and_preprocess:
             checkpoint_data = {
                 "base_input_directory": base_input_directory,
                 "split_audio_directory": split_audio_dir,
@@ -513,15 +513,28 @@ if __name__ == "__main__":
                  # Non toccare models_to_process, files_processed, current_model se resume=n
              })
              print("Aggiornati percorsi/parametri/chunk totali nel checkpoint esistente.")
+        print("DEBUG: Contenuto checkpoint_data PRIMA del salvataggio:")
+        print(json.dumps(checkpoint_data, indent=4)) # Stampa per debug
         save_checkpoint() # Salva lo stato COMPLETO
+        print("Checkpoint salvato.")
 
     # --- Setup Generale post-input/checkpoint ---
-    # Assicurati che tutti i path necessari siano definiti prima del loop principale
-    if not all([ 'base_input_directory' in checkpoint_data, 'split_audio_directory' in checkpoint_data,
-                 'preprocessed_audio_directory' in checkpoint_data, 'base_output_dir' in checkpoint_data,
-                 'split_manifest_path' in checkpoint_data]):
-         print("ERRORE CRITICO: Dati essenziali mancanti nel checkpoint prima del loop modelli.")
+    print("DEBUG: Controllo chiavi checkpoint DOPO blocco if...")
+    print(f"  Chiavi presenti: {list(checkpoint_data.keys())}") # Stampa le chiavi esistenti
+
+    # Questo controllo ora dovrebbe passare perché abbiamo popolato checkpoint_data
+    required_keys = ['base_input_directory', 'split_audio_directory',
+                     'preprocessed_audio_directory', 'base_output_dir',
+                     'split_manifest_path']
+    missing_keys = [key for key in required_keys if key not in checkpoint_data]
+
+    if missing_keys:
+         print(f"ERRORE CRITICO: Chiavi mancanti nel checkpoint: {missing_keys}") # Stampa quali mancano
+         print("Contenuto attuale di checkpoint_data:")
+         print(json.dumps(checkpoint_data, indent=4))
          allow_sleep(); sys.exit(1)
+    else:
+         print("DEBUG: Tutte le chiavi essenziali del checkpoint sono presenti.")
 
     split_manifest_path = checkpoint_data.get('split_manifest_path')
     split_manifest_content = {}; # Ricarica sempre per avere l'ultima versione
